@@ -2,8 +2,6 @@
 
 <div align="center">
 
-![Catalog Server](https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800&h=400&fit=crop&crop=center)
-
 **A modern, scalable product catalog system built with React, Flask, and AWS**
 
 [![AWS](https://img.shields.io/badge/AWS-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com/)
