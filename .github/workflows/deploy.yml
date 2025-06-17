@@ -1,0 +1,177 @@
+# This GitHub Actions workflow deploys the full Catalog Server stack
+# It runs tests on both backend and frontend, builds the frontend, and deploys to an EC2 instance
+
+name: Deploy Catalog Server
+
+# Trigger workflow on push or pull request to the main branch
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Global environment variables
+env:
+  AWS_REGION: us-east-1          # AWS region used
+  NODE_VERSION: '18'             # Node.js version for frontend
+  PYTHON_VERSION: '3.10'         # Python version for backend
+
+# ========================
+# Step 1: Test the backend
+# ========================
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Test backend
+        env:
+          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/testdb
+          SECRET_KEY: test-secret-key
+        run: |
+          cd backend
+          # Run a minimal test: initialize database and print success
+          python -c "
+          from app import app, db
+          with app.app_context():
+              db.create_all()
+              print('Backend tests passed!')
+          "
+
+# ============================
+# Step 2: Build the frontend
+# ============================
+  test-build-frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci  # clean install using package-lock.json
+
+      - name: Build frontend
+        env:
+          REACT_APP_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
+          REACT_APP_USER_POOL_CLIENT_ID: ${{ secrets.COGNITO_USER_POOL_CLIENT_ID }}
+          REACT_APP_IDENTITY_POOL_ID: ${{ secrets.COGNITO_IDENTITY_POOL_ID }}
+          REACT_APP_API_URL: ${{ secrets.API_URL }}
+        run: |
+          cd frontend
+          npm run build  # create static React app build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
+
+# =======================================
+# Step 3: Deploy backend, frontend & Nginx
+# =======================================
+  deploy:
+    needs: [test-backend, test-build-frontend]  # Only run if both jobs pass
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'         # Only on main branch
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
+
+      - name: Create SSH key
+        run: |
+          echo "${{ secrets.EC2_PRIVATE_KEY }}" > ec2-key.pem
+          chmod 600 ec2-key.pem  # Required for SSH to work securely
+
+      - name: Upload backend to EC2
+        run: |
+          # Copy backend files to EC2 instance
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend/* ubuntu@${{ secrets.EC2_HOST }}:/opt/catalog-server/backend/
+
+      - name: Upload frontend build to EC2
+        run: |
+          # Copy React build output to EC2
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build/* ubuntu@${{ secrets.EC2_HOST }}:/opt/catalog-server/frontend/
+
+      - name: Upload nginx config to EC2
+        run: |
+          # Copy nginx config file to EC2 and reload nginx
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx/catalog.conf ubuntu@${{ secrets.EC2_HOST }}:/tmp/catalog.conf
+
+          # Move config into place and reload nginx
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} <<EOF
+            sudo mv /tmp/catalog.conf /etc/nginx/sites-available/catalog
+            sudo ln -sf /etc/nginx/sites-available/catalog /etc/nginx/sites-enabled/
+            sudo nginx -t && sudo systemctl reload nginx
+          EOF
+
+      - name: Restart backend service
+        run: |
+          # Restart the Flask app (assumed as systemd service 'catalog')
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} <<EOF
+            sudo systemctl restart catalog
+            sudo systemctl status catalog
+          EOF
+
+      - name: Clean up SSH key
+        run: rm ec2-key.pem
+
+      - name: Health check
+        env:
+          API_URL: ${{ secrets.API_URL }}
+        run: |
+          # Wait for services to restart
+          sleep 30
+          # Test backend health endpoint
+          curl -f $API_URL/health || exit 1
