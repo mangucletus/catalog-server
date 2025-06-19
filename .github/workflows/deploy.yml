@@ -52,7 +52,7 @@ jobs:
         allowed_cidr_blocks = ["0.0.0.0/0"]
         db_username = "catalog_user"
         db_password = "${{ secrets.DB_PASSWORD }}"
-        db_name = "catalog"
+        db_name = "catalogdb"
         EOF
 
     - name: Terraform Init
