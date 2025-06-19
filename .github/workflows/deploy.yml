@@ -188,7 +188,7 @@ jobs:
       run: |
         cd backend
         cat > .env << EOF
-        DATABASE_URL=postgresql://${{ secrets.DB_USERNAME }}:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.rds_endpoint }}:5432/catalog
+        DATABASE_URL=postgresql://catalog_user:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.rds_endpoint }}:5432/catalogdb
         SECRET_KEY=${{ secrets.FLASK_SECRET_KEY }}
         FLASK_ENV=production
         EOF
@@ -203,24 +203,51 @@ jobs:
         echo "$EC2_KEY" > ec2-key.pem
         chmod 600 ec2-key.pem
         
-        # Wait for EC2 to be ready
-        echo "Waiting for EC2 instance..."
-        sleep 60
+        # Wait for EC2 to be ready and user-data script to complete
+        echo "Waiting for EC2 instance and user-data script..."
+        sleep 120
         
-        # Deploy nginx config
+        # Wait for user-data script to complete by checking cloud-init status
+        echo "Checking if user-data script completed..."
+        timeout 300 ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+          while ! sudo cloud-init status --wait; do
+            echo 'Waiting for cloud-init to complete...'
+            sleep 10
+          done
+          echo 'Cloud-init completed successfully'
+        "
+        
+        # Ensure directory structure exists and has correct permissions
+        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+          sudo mkdir -p /opt/catalog-server/backend
+          sudo mkdir -p /opt/catalog-server/frontend
+          sudo chown -R catalog:catalog /opt/catalog-server
+          sudo chmod -R 755 /opt/catalog-server
+        "
+        
+        # Deploy nginx config to tmp first
         scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx/catalog.conf $EC2_USER@$EC2_HOST:/tmp/
         
-        # Deploy backend
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend/* $EC2_USER@$EC2_HOST:/opt/catalog-server/backend/
-        
-        # Deploy frontend
+        # Deploy backend files to tmp, then move with proper permissions
+        echo "Deploying backend files..."
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend/* $EC2_USER@$EC2_HOST:/tmp/backend-files/
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          sudo mkdir -p /opt/catalog-server/frontend
-          sudo chown -R catalog:catalog /opt/catalog-server/frontend
+          sudo cp -r /tmp/backend-files/* /opt/catalog-server/backend/
+          sudo chown -R catalog:catalog /opt/catalog-server/backend
+          sudo rm -rf /tmp/backend-files
         "
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build/* $EC2_USER@$EC2_HOST:/opt/catalog-server/frontend/
+        
+        # Deploy frontend files
+        echo "Deploying frontend files..."
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build/* $EC2_USER@$EC2_HOST:/tmp/frontend-files/
+        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+          sudo cp -r /tmp/frontend-files/* /opt/catalog-server/frontend/
+          sudo chown -R catalog:catalog /opt/catalog-server/frontend
+          sudo rm -rf /tmp/frontend-files
+        "
         
         # Configure and restart services
+        echo "Configuring services..."
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
           sudo cp /tmp/catalog.conf /etc/nginx/sites-available/catalog
           sudo ln -sf /etc/nginx/sites-available/catalog /etc/nginx/sites-enabled/
@@ -228,6 +255,8 @@ jobs:
           sudo nginx -t
           sudo systemctl restart catalog
           sudo systemctl restart nginx
+          sudo systemctl status catalog --no-pager
+          sudo systemctl status nginx --no-pager
         "
         
         rm ec2-key.pem
