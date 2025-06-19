@@ -37,7 +37,7 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Create Internet Gateway
+# Create Internet Gateway for public internet access
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
