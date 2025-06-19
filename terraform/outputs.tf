@@ -1,5 +1,11 @@
 # Output values for use in other parts of the infrastructure
 
+output "private_key_pem" {
+  description = "Private key for EC2 access"
+  value       = tls_private_key.main.private_key_pem
+  sensitive   = true
+}
+
 output "ec2_public_ip" {
   description = "Public IP address of the EC2 instance"
   value       = aws_instance.web.public_ip

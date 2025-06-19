@@ -6,6 +6,14 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.0"
+    }
   }
   
   # Backend configuration for using existing S3 bucket
@@ -37,7 +45,7 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Create Internet Gateway for public internet access
+# Create Internet Gateway
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
@@ -274,6 +282,17 @@ resource "aws_cognito_identity_pool" "main" {
 
   tags = {
     Name        = "${var.project_name}-identity-pool"
+    Environment = var.environment
+  }
+}
+
+# Create Key Pair
+resource "aws_key_pair" "main" {
+  key_name   = var.key_pair_name
+  public_key = file("${path.module}/catalog-server-key.pub")
+  
+  tags = {
+    Name        = "${var.project_name}-key-pair"
     Environment = var.environment
   }
 }
