@@ -9,26 +9,8 @@ terraform {
   }
 }
 
-# Configure AWS Provider (removed profile for GitHub Actions compatibility)
 provider "aws" {
   region = var.aws_region
-  # profile = "task-manager-amplify-dev"  # Removed for GitHub Actions
-}
-
-# Data source to get latest Ubuntu AMI (replaces hard-coded AMI)
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical (Ubuntu)
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-22.04-amd64-server-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
 }
 
 # Get available AZs
@@ -110,7 +92,6 @@ resource "aws_security_group" "web" {
   description = "Security group for web server"
   vpc_id      = aws_vpc.main.id
 
-  # HTTP access
   ingress {
     description = "HTTP"
     from_port   = 80
@@ -119,7 +100,6 @@ resource "aws_security_group" "web" {
     cidr_blocks = var.allowed_cidr_blocks
   }
 
-  # HTTPS access
   ingress {
     description = "HTTPS"
     from_port   = 443
@@ -128,7 +108,6 @@ resource "aws_security_group" "web" {
     cidr_blocks = var.allowed_cidr_blocks
   }
 
-  # SSH access
   ingress {
     description = "SSH"
     from_port   = 22
@@ -137,7 +116,6 @@ resource "aws_security_group" "web" {
     cidr_blocks = var.allowed_cidr_blocks
   }
 
-  # Flask app access (for development)
   ingress {
     description = "Flask App"
     from_port   = 5000
@@ -146,7 +124,6 @@ resource "aws_security_group" "web" {
     cidr_blocks = var.allowed_cidr_blocks
   }
 
-  # All outbound traffic
   egress {
     from_port   = 0
     to_port     = 0
@@ -166,7 +143,6 @@ resource "aws_security_group" "rds" {
   description = "Security group for RDS database"
   vpc_id      = aws_vpc.main.id
 
-  # PostgreSQL access from web servers
   ingress {
     description     = "PostgreSQL"
     from_port       = 5432
@@ -194,34 +170,28 @@ resource "aws_db_subnet_group" "main" {
 
 # RDS PostgreSQL Instance
 resource "aws_db_instance" "postgres" {
-  # Database configuration
   identifier     = "${var.project_name}-db"
   engine         = "postgres"
   engine_version = "15.3"
-  instance_class = "db.t3.micro"  # Free tier eligible
+  instance_class = "db.t3.micro"
 
-  # Storage configuration
   allocated_storage     = 20
   max_allocated_storage = 100
   storage_type          = "gp2"
   storage_encrypted     = true
 
-  # Database details
   db_name  = var.db_name
   username = var.db_username
   password = var.db_password
 
-  # Network configuration
   vpc_security_group_ids = [aws_security_group.rds.id]
   db_subnet_group_name   = aws_db_subnet_group.main.name
   publicly_accessible    = false
 
-  # Backup configuration
   backup_retention_period = 7
-  backup_window          = "03:00-04:00"
-  maintenance_window     = "sun:04:00-sun:05:00"
+  backup_window           = "03:00-04:00"
+  maintenance_window      = "sun:04:00-sun:05:00"
 
-  # Disable deletion protection for development
   deletion_protection = false
   skip_final_snapshot = true
 
@@ -235,10 +205,8 @@ resource "aws_db_instance" "postgres" {
 resource "aws_cognito_user_pool" "main" {
   name = "${var.project_name}-user-pool"
 
-  # User attributes
   username_attributes = ["email"]
-  
-  # Password policy
+
   password_policy {
     minimum_length    = 8
     require_lowercase = true
@@ -247,10 +215,8 @@ resource "aws_cognito_user_pool" "main" {
     require_uppercase = true
   }
 
-  # Auto verification
   auto_verified_attributes = ["email"]
 
-  # Account recovery
   account_recovery_setting {
     recovery_mechanism {
       name     = "verified_email"
@@ -269,17 +235,15 @@ resource "aws_cognito_user_pool_client" "main" {
   name         = "${var.project_name}-client"
   user_pool_id = aws_cognito_user_pool.main.id
 
-  # Authentication flows
   explicit_auth_flows = [
     "ALLOW_USER_PASSWORD_AUTH",
     "ALLOW_USER_SRP_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH"
   ]
 
-  # Token validity
-  access_token_validity  = 60    # 1 hour
-  id_token_validity      = 60    # 1 hour
-  refresh_token_validity = 30    # 30 days
+  access_token_validity  = 60
+  id_token_validity      = 60
+  refresh_token_validity = 30
 
   token_validity_units {
     access_token  = "minutes"
@@ -287,13 +251,12 @@ resource "aws_cognito_user_pool_client" "main" {
     refresh_token = "days"
   }
 
-  # Prevent user existence errors
   prevent_user_existence_errors = "ENABLED"
 }
 
 # Cognito Identity Pool
 resource "aws_cognito_identity_pool" "main" {
-  identity_pool_name               = "${var.project_name}-identity-pool"
+  identity_pool_name                = "${var.project_name}-identity-pool"
   allow_unauthenticated_identities = false
 
   cognito_identity_providers {
@@ -308,15 +271,14 @@ resource "aws_cognito_identity_pool" "main" {
   }
 }
 
-# EC2 Instance (updated to use dynamic AMI)
+# EC2 Instance (updated with hardcoded AMI ID)
 resource "aws_instance" "web" {
-  ami                    = data.aws_ami.ubuntu.id  # Now uses dynamic AMI
+  ami                    = "ami-01f23391a59163da9"  # Hardcoded Ubuntu 22.04 LTS AMI
   instance_type          = var.instance_type
-  key_name              = var.key_pair_name
-  subnet_id             = aws_subnet.public.id
+  key_name               = var.key_pair_name
+  subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.web.id]
 
-  # User data script to set up the server
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
     db_host     = aws_db_instance.postgres.endpoint
     db_name     = var.db_name
@@ -329,6 +291,5 @@ resource "aws_instance" "web" {
     Environment = var.environment
   }
 
-  # Ensure RDS is created first
   depends_on = [aws_db_instance.postgres]
 }
