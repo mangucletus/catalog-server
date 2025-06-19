@@ -22,6 +22,18 @@ Thumbs.db
 .env.production.local
 *.env
 
+# Backend and Frontend Environment Files
+backend/.env
+backend/.env.local
+backend/.env.development
+backend/.env.production
+backend/.env.staging
+frontend/.env
+frontend/.env.local
+frontend/.env.development
+frontend/.env.production
+frontend/.env.staging
+
 # Backend Python
 __pycache__/
 *.py[cod]
