@@ -241,13 +241,14 @@ jobs:
           sudo chown -R catalog:catalog /opt/catalog-server/backend
           sudo rm -rf /tmp/backend-files
           
-          # Skip pip install since user-data already installed core packages
-          # Only install if there are additional packages not in user-data
+          # Install only additional packages if needed (skip core packages)
           echo 'Checking for additional dependencies...'
           cd /opt/catalog-server/backend
           if [ -f requirements.txt ]; then
-            echo 'Requirements.txt found - core packages already installed via user-data'
-            echo 'Skipping redundant installation to avoid psycopg2 build issues'
+            echo 'Installing additional packages (skipping core packages already installed)...'
+            # Install only packages not already installed
+            sudo -u catalog /opt/catalog-server/backend/venv/bin/pip install --upgrade pip
+            sudo -u catalog /opt/catalog-server/backend/venv/bin/pip install requests flask-migrate || echo 'Additional packages installation completed with warnings'
           fi
         "
         
@@ -305,18 +306,26 @@ jobs:
           sudo systemctl status nginx --no-pager
         "
         
-        rm ec2-key.pem
+        # Don't remove the key yet - needed for health check
+        echo "Services configured successfully"
 
     - name: Health check
       env:
         API_URL: http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+        EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+        EC2_USER: ubuntu
+        EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
       run: |
+        # Recreate SSH key for health check debugging
+        echo "$EC2_KEY" > ec2-key.pem
+        chmod 600 ec2-key.pem
+        
         echo "Waiting for services to start..."
         sleep 30
         
         # Debug: Check if services are running
         echo "=== Debugging Services ==="
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.ec2_public_ip }} "
+        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
           echo 'Checking catalog service status:'
           sudo systemctl status catalog --no-pager || echo 'Catalog service not running'
           
@@ -350,6 +359,9 @@ jobs:
         
         echo "✅ Deployment successful!"
         echo "🌐 Application URL: $API_URL"
+        
+        # Clean up SSH key
+        rm ec2-key.pem
 
     - name: Deployment summary
       run: |
