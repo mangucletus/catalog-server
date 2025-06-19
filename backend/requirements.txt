@@ -1,6 +1,20 @@
+# Flask==2.3.3
+# Flask-SQLAlchemy==3.0.5
+# Flask-CORS==4.0.0
+# psycopg2-binary==2.9.7
+# python-dotenv==1.0.0
+# gunicorn==21.2.
+
+# Core Flask packages (already installed in user-data)
 Flask==2.3.3
 Flask-SQLAlchemy==3.0.5
 Flask-CORS==4.0.0
-psycopg2-binary==2.9.7
 python-dotenv==1.0.0
 gunicorn==21.2.0
+
+# Database package - use simpler version to avoid build issues
+psycopg2-binary
+
+# Additional packages you might need
+requests
+flask-migrate

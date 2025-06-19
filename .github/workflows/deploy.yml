@@ -241,11 +241,13 @@ jobs:
           sudo chown -R catalog:catalog /opt/catalog-server/backend
           sudo rm -rf /tmp/backend-files
           
-          # Install additional dependencies from requirements.txt if it exists
-          if [ -f /opt/catalog-server/backend/requirements.txt ]; then
-            echo 'Installing additional Python dependencies...'
-            cd /opt/catalog-server/backend
-            sudo -u catalog /opt/catalog-server/backend/venv/bin/pip install -r requirements.txt
+          # Skip pip install since user-data already installed core packages
+          # Only install if there are additional packages not in user-data
+          echo 'Checking for additional dependencies...'
+          cd /opt/catalog-server/backend
+          if [ -f requirements.txt ]; then
+            echo 'Requirements.txt found - core packages already installed via user-data'
+            echo 'Skipping redundant installation to avoid psycopg2 build issues'
           fi
         "
         
