@@ -7,6 +7,13 @@ terraform {
       version = "~> 5.0"
     }
   }
+  
+  # Backend configuration for using existing S3 bucket
+  backend "s3" {
+    bucket = "catalog-server-terraform-state-mangucletus-4523"
+    key    = "terraform/terraform.tfstate"
+    region = "eu-west-1"
+  }
 }
 
 provider "aws" {
@@ -271,9 +278,9 @@ resource "aws_cognito_identity_pool" "main" {
   }
 }
 
-# EC2 Instance (updated with hardcoded AMI ID)
+# EC2 Instance
 resource "aws_instance" "web" {
-  ami                    = "ami-01f23391a59163da9"  # Hardcoded Ubuntu 22.04 LTS AMI
+  ami                    = "ami-01f23391a59163da9"  # Ubuntu 22.04 LTS AMI
   instance_type          = var.instance_type
   key_name               = var.key_pair_name
   subnet_id              = aws_subnet.public.id

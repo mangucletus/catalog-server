@@ -1,18 +1,15 @@
-name: Deploy Catalog Server with Automated Environment Setup
+name: Deploy Catalog Server
 
-# Trigger deployment on push to main branch
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
 
-# Environment variables
 env:
   AWS_REGION: eu-west-1
   NODE_VERSION: '18'
   PYTHON_VERSION: '3.10'
-  TF_VAR_terraform_state_bucket: ${{ secrets.TERRAFORM_STATE_BUCKET }}
 
 jobs:
   # Infrastructure deployment
@@ -56,7 +53,6 @@ jobs:
         db_username = "catalog_user"
         db_password = "${{ secrets.DB_PASSWORD }}"
         db_name = "catalog"
-        terraform_state_bucket = "${{ secrets.TERRAFORM_STATE_BUCKET }}"
         EOF
 
     - name: Terraform Init
@@ -75,7 +71,7 @@ jobs:
         cd terraform
         terraform apply -auto-approve
         
-        # Capture outputs for use in other jobs
+        # Capture outputs
         echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
         echo "cognito_user_pool_id=$(terraform output -raw cognito_user_pool_id)" >> $GITHUB_OUTPUT
         echo "cognito_user_pool_client_id=$(terraform output -raw cognito_user_pool_client_id)" >> $GITHUB_OUTPUT
@@ -128,7 +124,7 @@ jobs:
             print('Backend tests passed!')
         "
 
-  # Build frontend with dynamic environment variables
+  # Build frontend
   build-frontend:
     needs: deploy-infrastructure
     runs-on: ubuntu-latest
@@ -150,7 +146,7 @@ jobs:
         cd frontend
         npm ci
 
-    - name: Generate environment file from Terraform outputs
+    - name: Generate environment file
       run: |
         cd frontend
         cat > .env << EOF
@@ -160,16 +156,13 @@ jobs:
         REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
         REACT_APP_AWS_REGION=${{ env.AWS_REGION }}
         EOF
-        
-        echo "Generated frontend .env file:"
-        cat .env
 
     - name: Build frontend
       run: |
         cd frontend
         npm run build
 
-    - name: Upload frontend build artifacts
+    - name: Upload frontend build
       uses: actions/upload-artifact@v4
       with:
         name: frontend-build
@@ -199,10 +192,8 @@ jobs:
         SECRET_KEY=${{ secrets.FLASK_SECRET_KEY }}
         FLASK_ENV=production
         EOF
-        
-        echo "Generated backend .env file (secrets hidden)"
 
-    - name: Deploy nginx configuration
+    - name: Deploy to EC2
       env:
         EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
         EC2_USER: ubuntu
@@ -213,95 +204,49 @@ jobs:
         chmod 600 ec2-key.pem
         
         # Wait for EC2 to be ready
-        echo "Waiting for EC2 instance to be ready..."
+        echo "Waiting for EC2 instance..."
         sleep 60
         
-        # Copy nginx configuration
-        echo "Deploying nginx configuration..."
+        # Deploy nginx config
         scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx/catalog.conf $EC2_USER@$EC2_HOST:/tmp/
         
-        # Install nginx configuration
+        # Deploy backend
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend/* $EC2_USER@$EC2_HOST:/opt/catalog-server/backend/
+        
+        # Deploy frontend
+        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+          sudo mkdir -p /opt/catalog-server/frontend
+          sudo chown -R catalog:catalog /opt/catalog-server/frontend
+        "
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build/* $EC2_USER@$EC2_HOST:/opt/catalog-server/frontend/
+        
+        # Configure and restart services
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
           sudo cp /tmp/catalog.conf /etc/nginx/sites-available/catalog
           sudo ln -sf /etc/nginx/sites-available/catalog /etc/nginx/sites-enabled/
           sudo rm -f /etc/nginx/sites-enabled/default
           sudo nginx -t
-        "
-
-    - name: Deploy backend to EC2
-      env:
-        EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
-        EC2_USER: ubuntu
-        EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
-      run: |
-        # Copy backend files to EC2
-        echo "Deploying backend files..."
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend/* $EC2_USER@$EC2_HOST:/opt/catalog-server/backend/
-        
-        # Restart backend service
-        echo "Restarting backend service..."
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
           sudo systemctl restart catalog
-          sudo systemctl status catalog --no-pager
-        "
-
-    - name: Deploy frontend to EC2
-      env:
-        EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
-        EC2_USER: ubuntu
-        EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
-      run: |
-        # Create frontend directory structure on EC2 if it doesn't exist
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          sudo mkdir -p /opt/catalog-server/frontend
-          sudo chown -R catalog:catalog /opt/catalog-server/frontend
-        "
-        
-        # Copy frontend build to EC2
-        echo "Deploying frontend files..."
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build/* $EC2_USER@$EC2_HOST:/opt/catalog-server/frontend/
-        
-        # Restart nginx
-        echo "Restarting nginx..."
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
           sudo systemctl restart nginx
-          sudo systemctl status nginx --no-pager
         "
         
-        # Clean up SSH key
         rm ec2-key.pem
 
-    - name: Health check and deployment verification
+    - name: Health check
       env:
         API_URL: http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
       run: |
-        # Wait for services to start
-        echo "Waiting for services to start..."
         sleep 30
-        
-        # Check if API is responding
-        echo "Testing API health..."
         curl -f $API_URL/health || exit 1
-        
-        # Test products endpoint
-        echo "Testing products endpoint..."
         curl -f $API_URL/products || exit 1
         
         echo "✅ Deployment successful!"
         echo "🌐 Application URL: $API_URL"
-        echo "🔗 API Health: $API_URL/health"
-        echo "📦 Products API: $API_URL/products"
 
-    - name: Post deployment summary
+    - name: Deployment summary
       run: |
         echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
         echo "| Component | Status | URL |" >> $GITHUB_STEP_SUMMARY
         echo "|-----------|--------|-----|" >> $GITHUB_STEP_SUMMARY
         echo "| Application | ✅ Deployed | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }} |" >> $GITHUB_STEP_SUMMARY
         echo "| API Health | ✅ Healthy | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}/health |" >> $GITHUB_STEP_SUMMARY
-        echo "| Products API | ✅ Working | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}/products |" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
-        echo "1. Visit the application URL to test user registration" >> $GITHUB_STEP_SUMMARY
-        echo "2. Check AWS Cognito console for user management" >> $GITHUB_STEP_SUMMARY
-        echo "3. Monitor CloudWatch logs for any issues" >> $GITHUB_STEP_SUMMARY

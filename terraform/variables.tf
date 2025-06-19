@@ -21,7 +21,7 @@ variable "environment" {
 variable "instance_type" {
   description = "EC2 instance type"
   type        = string
-  default     = "t3.micro"  # Free tier eligible
+  default     = "t3.micro"
 }
 
 variable "key_pair_name" {
@@ -33,7 +33,7 @@ variable "key_pair_name" {
 variable "allowed_cidr_blocks" {
   description = "CIDR blocks allowed to access the application"
   type        = list(string)
-  default     = ["0.0.0.0/0"]  # Warning: This allows access from anywhere. Restrict in production!
+  default     = ["0.0.0.0/0"]
 }
 
 variable "db_username" {
@@ -45,7 +45,6 @@ variable "db_username" {
 variable "db_password" {
   description = "Database password"
   type        = string
-  default     = "catalog_pass_change_me"
   sensitive   = true
 }
 
@@ -53,11 +52,4 @@ variable "db_name" {
   description = "Database name"
   type        = string
   default     = "catalog"
-}
-
-# S3 backend bucket name variable
-variable "terraform_state_bucket" {
-  description = "Name of S3 bucket for storing Terraform state"
-  type        = string
-  default     = "catalog-server-terraform-state-mangucletus-4523"
 }
