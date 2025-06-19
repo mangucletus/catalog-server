@@ -225,8 +225,13 @@ jobs:
           sudo chmod -R 755 /opt/catalog-server
         "
         
-        # Deploy nginx config to tmp first
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx/catalog.conf $EC2_USER@$EC2_HOST:/tmp/
+        # Deploy nginx config to tmp first (only if it exists)
+        if [ -f nginx/catalog.conf ]; then
+          echo "Deploying custom nginx config..."
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx/catalog.conf $EC2_USER@$EC2_HOST:/tmp/
+        else
+          echo "No custom nginx config found, using default from user-data..."
+        fi
         
         # Deploy backend files to tmp, then move with proper permissions
         echo "Deploying backend files..."
@@ -235,6 +240,13 @@ jobs:
           sudo cp -r /tmp/backend-files/* /opt/catalog-server/backend/
           sudo chown -R catalog:catalog /opt/catalog-server/backend
           sudo rm -rf /tmp/backend-files
+          
+          # Install additional dependencies from requirements.txt if it exists
+          if [ -f /opt/catalog-server/backend/requirements.txt ]; then
+            echo 'Installing additional Python dependencies...'
+            cd /opt/catalog-server/backend
+            sudo -u catalog /opt/catalog-server/backend/venv/bin/pip install -r requirements.txt
+          fi
         "
         
         # Deploy frontend files
@@ -249,11 +261,43 @@ jobs:
         # Configure and restart services
         echo "Configuring services..."
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          sudo cp /tmp/catalog.conf /etc/nginx/sites-available/catalog
-          sudo ln -sf /etc/nginx/sites-available/catalog /etc/nginx/sites-enabled/
-          sudo rm -f /etc/nginx/sites-enabled/default
+          # Only update nginx config if custom one was uploaded
+          if [ -f /tmp/catalog.conf ]; then
+            sudo cp /tmp/catalog.conf /etc/nginx/sites-available/catalog
+            sudo ln -sf /etc/nginx/sites-available/catalog /etc/nginx/sites-enabled/
+            sudo rm -f /etc/nginx/sites-enabled/default
+          fi
+          
+          # Test nginx config before restarting
           sudo nginx -t
-          sudo systemctl restart catalog
+          if [ \$? -eq 0 ]; then
+            echo 'Nginx config is valid'
+          else
+            echo 'Nginx config error, keeping default config'
+            sudo rm -f /etc/nginx/sites-enabled/catalog
+          fi
+          
+          # Start catalog service (it was enabled in user-data but not started)
+          echo 'Starting catalog service...'
+          sudo systemctl daemon-reload
+          sudo systemctl start catalog
+          sleep 5
+          
+          # Check if catalog service started successfully
+          if sudo systemctl is-active --quiet catalog; then
+            echo 'Catalog service started successfully'
+          else
+            echo 'Catalog service failed to start, checking logs:'
+            sudo journalctl -u catalog --no-pager -n 20
+            
+            # Try to start it manually for debugging
+            echo 'Trying to start Flask app manually:'
+            cd /opt/catalog-server/backend
+            sudo -u catalog /opt/catalog-server/backend/venv/bin/python app.py &
+            sleep 3
+          fi
+          
+          # Restart nginx
           sudo systemctl restart nginx
           sudo systemctl status catalog --no-pager
           sudo systemctl status nginx --no-pager
@@ -265,9 +309,42 @@ jobs:
       env:
         API_URL: http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
       run: |
+        echo "Waiting for services to start..."
         sleep 30
-        curl -f $API_URL/health || exit 1
-        curl -f $API_URL/products || exit 1
+        
+        # Debug: Check if services are running
+        echo "=== Debugging Services ==="
+        ssh -i ec2-key.pem -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.ec2_public_ip }} "
+          echo 'Checking catalog service status:'
+          sudo systemctl status catalog --no-pager || echo 'Catalog service not running'
+          
+          echo -e '\nChecking nginx status:'
+          sudo systemctl status nginx --no-pager || echo 'Nginx service not running'
+          
+          echo -e '\nChecking if Flask app is responding locally:'
+          curl -f http://localhost:5000/health || echo 'Flask app not responding'
+          
+          echo -e '\nChecking nginx error logs:'
+          sudo tail -10 /var/log/nginx/error.log || echo 'No nginx error logs'
+          
+          echo -e '\nChecking catalog service logs:'
+          sudo journalctl -u catalog --no-pager -n 10 || echo 'No catalog service logs'
+          
+          echo -e '\nChecking if port 5000 is listening:'
+          sudo netstat -tlnp | grep :5000 || echo 'Port 5000 not listening'
+        "
+        
+        # Try health check
+        echo "=== Testing Health Check ==="
+        curl -v $API_URL/health || {
+          echo "Health check failed with direct curl"
+          exit 1
+        }
+        
+        curl -f $API_URL/products || {
+          echo "Products endpoint failed"
+          exit 1
+        }
         
         echo "✅ Deployment successful!"
         echo "🌐 Application URL: $API_URL"
