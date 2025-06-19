@@ -46,6 +46,11 @@ output "api_health_check" {
   value       = "http://${aws_instance.web.public_ip}/health"
 }
 
+output "s3_terraform_state_bucket" {
+  description = "S3 bucket storing Terraform state"
+  value       = aws_s3_bucket.terraform_state.bucket
+}
+
 output "setup_instructions" {
   description = "Next steps to complete setup"
   value = <<EOF
@@ -54,6 +59,7 @@ output "setup_instructions" {
    REACT_APP_USER_POOL_CLIENT_ID=${aws_cognito_user_pool_client.main.id}
    REACT_APP_IDENTITY_POOL_ID=${aws_cognito_identity_pool.main.id}
    REACT_APP_API_URL=http://${aws_instance.web.public_ip}
+   REACT_APP_AWS_REGION=eu-west-1
 
 2. Run: cd frontend && npm run build
 3. Copy build files to EC2: scp -r build/* ubuntu@${aws_instance.web.public_ip}:/opt/catalog-server/frontend/

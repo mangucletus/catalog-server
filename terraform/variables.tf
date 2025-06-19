@@ -3,7 +3,7 @@
 variable "aws_region" {
   description = "AWS region to deploy resources"
   type        = string
-  default     = "us-east-1"
+  default     = "eu-west-1"
 }
 
 variable "project_name" {
@@ -15,7 +15,7 @@ variable "project_name" {
 variable "environment" {
   description = "Environment (dev, staging, prod)"
   type        = string
-  default     = "dev"
+  default     = "production"
 }
 
 variable "instance_type" {
@@ -53,4 +53,11 @@ variable "db_name" {
   description = "Database name"
   type        = string
   default     = "catalog"
+}
+
+# S3 backend bucket name variable
+variable "terraform_state_bucket" {
+  description = "Name of S3 bucket for storing Terraform state"
+  type        = string
+  default     = "catalog-server-terraform-state-mangucletus-4523"
 }

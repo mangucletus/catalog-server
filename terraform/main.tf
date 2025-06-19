@@ -9,12 +9,13 @@ terraform {
   }
 }
 
-# Configure AWS Provider
+# Configure AWS Provider (removed profile for GitHub Actions compatibility)
 provider "aws" {
   region = var.aws_region
+  # profile = "task-manager-amplify-dev"  # Removed for GitHub Actions
 }
 
-# Data source to get latest Ubuntu AMI
+# Data source to get latest Ubuntu AMI (replaces hard-coded AMI)
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"] # Canonical (Ubuntu)
@@ -28,6 +29,11 @@ data "aws_ami" "ubuntu" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+}
+
+# Get available AZs
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
 # Create VPC
@@ -75,11 +81,6 @@ resource "aws_subnet" "private" {
     Name        = "${var.project_name}-private-subnet"
     Environment = var.environment
   }
-}
-
-# Get available AZs
-data "aws_availability_zones" "available" {
-  state = "available"
 }
 
 # Create Route Table for Public Subnet
@@ -307,9 +308,9 @@ resource "aws_cognito_identity_pool" "main" {
   }
 }
 
-# EC2 Instance
+# EC2 Instance (updated to use dynamic AMI)
 resource "aws_instance" "web" {
-  ami                    = data.aws_ami.ubuntu.id
+  ami                    = data.aws_ami.ubuntu.id  # Now uses dynamic AMI
   instance_type          = var.instance_type
   key_name              = var.key_pair_name
   subnet_id             = aws_subnet.public.id

@@ -10,16 +10,16 @@ import './App.css';
 const amplifyConfig = {
   Auth: {
     Cognito: {
-      userPoolId: process.env.REACT_APP_USER_POOL_ID || 'us-east-1_XXXXXXXXX',
+      userPoolId: process.env.REACT_APP_USER_POOL_ID || 'eu-west-1_XXXXXXXXX',
       userPoolClientId: process.env.REACT_APP_USER_POOL_CLIENT_ID || 'xxxxxxxxxxxxxxxxxxxxxxxxxx',
-      identityPoolId: process.env.REACT_APP_IDENTITY_POOL_ID || 'us-east-1:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+      identityPoolId: process.env.REACT_APP_IDENTITY_POOL_ID || 'eu-west-1:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
     }
   },
   API: {
     REST: {
       catalogAPI: {
         endpoint: process.env.REACT_APP_API_URL || 'http://localhost:5000',
-        region: process.env.REACT_APP_AWS_REGION || 'us-east-1'
+        region: process.env.REACT_APP_AWS_REGION || 'eu-west-1'
       }
     }
   }
