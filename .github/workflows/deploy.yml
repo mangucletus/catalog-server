@@ -22,74 +22,68 @@ jobs:
       cognito_identity_pool_id: ${{ steps.terraform.outputs.cognito_identity_pool_id }}
       rds_endpoint: ${{ steps.terraform.outputs.rds_endpoint }}
       infrastructure_changed: ${{ steps.terraform.outputs.infrastructure_changed }}
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.0
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
 
-    - name: Create Terraform variables file
-      run: |
-        cd terraform
-        cat > terraform.tfvars << EOF
-        aws_region = "${{ env.AWS_REGION }}"
-        project_name = "catalog-server"
-        environment = "production"
-        instance_type = "t3.micro"
-        key_pair_name = "catalog-server-key"
-        allowed_cidr_blocks = ["0.0.0.0/0"]
-        db_username = "catalog_user"
-        db_password = "${{ secrets.DB_PASSWORD }}"
-        db_name = "catalogdb"
-        EOF
+      - name: Create Terraform variables file
+        run: |
+          cd terraform
+          cat > terraform.tfvars << EOF
+          aws_region = "${{ env.AWS_REGION }}"
+          project_name = "catalog-server"
+          environment = "production"
+          instance_type = "t3.micro"
+          key_pair_name = "catalog-server-key"
+          allowed_cidr_blocks = ["0.0.0.0/0"]
+          db_username = "catalog_user"
+          db_password = "${{ secrets.DB_PASSWORD }}"
+          db_name = "catalogdb"
+          EOF
 
-    - name: Terraform Init
-      run: |
-        cd terraform
-        terraform init
+      - name: Terraform Init
+        run: cd terraform && terraform init
 
-    - name: Terraform Plan
-      id: plan
-      run: |
-        cd terraform
-        terraform plan -detailed-exitcode -out=tfplan
-        PLAN_EXIT_CODE=$?
-        
-        if [ $PLAN_EXIT_CODE -eq 0 ]; then
-          echo "changes_needed=false" >> $GITHUB_OUTPUT
-        elif [ $PLAN_EXIT_CODE -eq 2 ]; then
-          echo "changes_needed=true" >> $GITHUB_OUTPUT
-        else
-          exit 1
-        fi
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd terraform
+          terraform plan -detailed-exitcode -out=tfplan || exit_code=$?
+          if [ "$exit_code" -eq 0 ]; then
+            echo "changes_needed=false" >> $GITHUB_OUTPUT
+          elif [ "$exit_code" -eq 2 ]; then
+            echo "changes_needed=true" >> $GITHUB_OUTPUT
+          else
+            exit 1
+          fi
 
-    - name: Terraform Apply
-      id: terraform
-      run: |
-        cd terraform
-        terraform apply -auto-approve tfplan
-        
-        echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
-        echo "cognito_user_pool_id=$(terraform output -raw cognito_user_pool_id)" >> $GITHUB_OUTPUT
-        echo "cognito_user_pool_client_id=$(terraform output -raw cognito_user_pool_client_id)" >> $GITHUB_OUTPUT
-        echo "cognito_identity_pool_id=$(terraform output -raw cognito_identity_pool_id)" >> $GITHUB_OUTPUT
-        echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> $GITHUB_OUTPUT
-        echo "infrastructure_changed=${{ steps.plan.outputs.changes_needed }}" >> $GITHUB_OUTPUT
+      - name: Terraform Apply
+        id: terraform
+        run: |
+          cd terraform
+          terraform apply -auto-approve tfplan
+          echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
+          echo "cognito_user_pool_id=$(terraform output -raw cognito_user_pool_id)" >> $GITHUB_OUTPUT
+          echo "cognito_user_pool_client_id=$(terraform output -raw cognito_user_pool_client_id)" >> $GITHUB_OUTPUT
+          echo "cognito_identity_pool_id=$(terraform output -raw cognito_identity_pool_id)" >> $GITHUB_OUTPUT
+          echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> $GITHUB_OUTPUT
+          echo "infrastructure_changed=${{ steps.plan.outputs.changes_needed }}" >> $GITHUB_OUTPUT
 
   test-backend:
     runs-on: ubuntu-latest
-    
     services:
       postgres:
         image: postgres:15
@@ -105,75 +99,71 @@ jobs:
           - 5432:5432
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: Install Python dependencies
-      run: |
-        cd backend
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install Python dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Test backend
-      env:
-        DATABASE_URL: postgresql://postgres:testpass@localhost:5432/testdb
-        SECRET_KEY: test-secret-key
-      run: |
-        cd backend
-        python -c "
-        from app import app, db
-        with app.app_context():
-            db.create_all()
-            print('Backend tests passed!')
-        "
+      - name: Test backend
+        env:
+          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/testdb
+          SECRET_KEY: test-secret-key
+        run: |
+          cd backend
+          python -c """
+          from app import app, db
+          with app.app_context():
+              db.create_all()
+              print('Backend tests passed!')
+          """
 
   build-frontend:
     needs: deploy-infrastructure
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ env.NODE_VERSION }}
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
-    - name: Install frontend dependencies
-      run: |
-        cd frontend
-        npm ci
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
 
-    - name: Generate environment file
-      run: |
-        cd frontend
-        cat > .env << EOF
-        REACT_APP_USER_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_id }}
-        REACT_APP_USER_POOL_CLIENT_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_client_id }}
-        REACT_APP_IDENTITY_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_identity_pool_id }}
-        REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
-        REACT_APP_AWS_REGION=${{ env.AWS_REGION }}
-        EOF
+      - name: Generate environment file
+        run: |
+          cd frontend
+          cat > .env << EOF
+          REACT_APP_USER_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_id }}
+          REACT_APP_USER_POOL_CLIENT_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_client_id }}
+          REACT_APP_IDENTITY_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_identity_pool_id }}
+          REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+          REACT_APP_AWS_REGION=${{ env.AWS_REGION }}
+          EOF
 
-    - name: Build frontend
-      run: |
-        cd frontend
-        npm run build
+      - name: Build frontend
+        run: cd frontend && npm run build
 
-    - name: Upload frontend build
-      uses: actions/upload-artifact@v4
-      with:
-        name: frontend-build
-        path: frontend/build/
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
 
   deploy-application:
     needs: [deploy-infrastructure, test-backend, build-frontend]
@@ -181,128 +171,138 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Download frontend build
-      uses: actions/download-artifact@v4
-      with:
-        name: frontend-build
-        path: frontend/build/
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
 
-    - name: Generate backend environment file
-      run: |
-        cd backend
-        cat > .env << EOF
-        DATABASE_URL=postgresql://catalog_user:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.rds_endpoint }}/catalogdb
-        SECRET_KEY=${{ secrets.FLASK_SECRET_KEY }}
-        FLASK_ENV=production
-        EOF
+      - name: Generate backend environment file
+        run: |
+          cd backend
+          cat > .env << EOF
+          DATABASE_URL=postgresql://catalog_user:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.rds_endpoint }}/catalogdb
+          SECRET_KEY=${{ secrets.FLASK_SECRET_KEY }}
+          FLASK_ENV=production
+          EOF
 
-    - name: Create systemd service file
-      run: |
-        cat > catalog.service << 'EOF'
-        [Unit]
-        Description=Catalog Server Flask Application
-        After=network.target
+      - name: Create systemd service file
+        run: |
+          cat > catalog.service << 'EOF'
+          [Unit]
+          Description=Catalog Server Flask Application
+          After=network.target
 
-        [Service]
-        Type=simple
-        User=catalog
-        Group=catalog
-        WorkingDirectory=/opt/catalog-server/backend
-        Environment=PATH=/opt/catalog-server/backend/venv/bin
-        ExecStart=/opt/catalog-server/backend/venv/bin/python app.py
-        Restart=always
-        RestartSec=3
-        StandardOutput=journal
-        StandardError=journal
+          [Service]
+          Type=simple
+          User=catalog
+          Group=catalog
+          WorkingDirectory=/opt/catalog-server/backend
+          Environment=PATH=/opt/catalog-server/backend/venv/bin
+          ExecStart=/opt/catalog-server/backend/venv/bin/python app.py
+          Restart=always
+          RestartSec=3
+          StandardOutput=journal
+          StandardError=journal
 
-        [Install]
-        WantedBy=multi-user.target
-        EOF
+          [Install]
+          WantedBy=multi-user.target
+          EOF
 
-    - name: Deploy to EC2
-      env:
-        EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
-        EC2_USER: ubuntu
-        EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
-      run: |
-        echo "$EC2_KEY" > ec2-key.pem
-        chmod 600 ec2-key.pem
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+          EC2_USER: ubuntu
+          EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
+        run: |
+          echo "$EC2_KEY" > ec2-key.pem
+          chmod 600 ec2-key.pem
 
-        echo "Deploying to EC2: $EC2_HOST"
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend $EC2_USER@$EC2_HOST:/tmp/
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build $EC2_USER@$EC2_HOST:/tmp/frontend
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no catalog.service $EC2_USER@$EC2_HOST:/tmp/
 
-        # Upload files
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend $EC2_USER@$EC2_HOST:/tmp/
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build $EC2_USER@$EC2_HOST:/tmp/frontend
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no catalog.service $EC2_USER@$EC2_HOST:/tmp/
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << 'EOF'
+            sudo systemctl stop catalog || true
+            sudo mkdir -p /opt/catalog-server/backend /opt/catalog-server/frontend
+            sudo cp -r /tmp/backend/* /opt/catalog-server/backend/
+            sudo cp -r /tmp/frontend/* /opt/catalog-server/frontend/
+            sudo chown -R catalog:catalog /opt/catalog-server
+            sudo chmod -R 755 /opt/catalog-server
 
-        # Deploy on remote server
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          sudo mkdir -p /opt/catalog-server/backend /opt/catalog-server/frontend
-          sudo cp -r /tmp/backend/* /opt/catalog-server/backend/
-          sudo cp -r /tmp/frontend/* /opt/catalog-server/frontend/
-          sudo chown -R catalog:catalog /opt/catalog-server
-          sudo chmod -R 755 /opt/catalog-server
+            sudo -u catalog bash << 'EOPY'
+              cd /opt/catalog-server/backend
+              source venv/bin/activate
+              pip install -r requirements.txt
+              python -c "from flask_cors import CORS; print('Flask-CORS imported')"
+              python -c "from flask_sqlalchemy import SQLAlchemy; print('SQLAlchemy imported')"
+              python -c "import os; from dotenv import load_dotenv; import psycopg2; load_dotenv();
+              try:
+                conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+                conn.close()
+                print('Database connected')
+              except Exception as e:
+                print(f'Database failed: {e}')"
+              python -c "try:
+                from app import app
+                print('App loaded')
+              except Exception as e:
+                print(f'App failed: {e}')"
+            EOPY
 
-          sudo cp /tmp/catalog.service /etc/systemd/system/
-          sudo systemctl daemon-reload
-          sudo systemctl enable catalog
-          sudo systemctl stop catalog || true
-          sudo systemctl start catalog
-          sudo systemctl restart nginx
-        "
+            sudo cp /tmp/catalog.service /etc/systemd/system/
+            sudo systemctl daemon-reload
+            sudo systemctl enable catalog
+            sudo systemctl start catalog
+            sleep 5
+            if sudo systemctl is-active --quiet catalog; then
+              echo 'Catalog service started successfully'
+            else
+              echo 'Catalog service failed:'
+              sudo journalctl -u catalog --no-pager -n 15
+            fi
+            sudo systemctl restart nginx
+          EOF
 
-        rm ec2-key.pem catalog.service
+          rm ec2-key.pem catalog.service
 
-    - name: Health check
-      env:
-        API_URL: http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
-        EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
-        EC2_USER: ubuntu
-        EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
-      run: |
-        echo "$EC2_KEY" > ec2-key.pem
-        chmod 600 ec2-key.pem
+      - name: Health check
+        env:
+          API_URL: http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+          EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+          EC2_USER: ubuntu
+          EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
+        run: |
+          echo "$EC2_KEY" > ec2-key.pem
+          chmod 600 ec2-key.pem
+          sleep 30
 
-        echo "Waiting for services to start..."
-        sleep 30
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << 'EOF'
+            sudo systemctl status catalog --no-pager || true
+            sudo journalctl -u catalog --no-pager -n 20 || true
+            sudo ss -tlnp | grep :5000 || echo 'Port 5000 not listening'
+            curl -f http://localhost:5000/health || echo 'Health check failed'
+            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python --version && pip list | grep -i flask'
+          EOF
 
-        echo "=== Service Health Check ==="
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          echo 'Catalog service status:'
-          sudo systemctl status catalog --no-pager || true
-          
-          echo 'Service logs:'
-          sudo journalctl -u catalog --no-pager -n 20 || true
-          
-          echo 'Port check:'
-          sudo ss -tlnp | grep :5000 || echo 'Port 5000 not listening'
-          
-          echo 'Testing health endpoint:'
-          curl -f http://localhost:5000/health || echo 'Health endpoint failed'
-        "
+          if curl -f $API_URL/health; then
+            echo "✅ Health check passed"
+            curl -f $API_URL/products && echo "✅ Products endpoint passed" || echo "❌ Products endpoint failed"
+          else
+            echo "❌ Health check failed"
+            exit 1
+          fi
 
-        echo "=== External Health Check ==="
-        if curl -f $API_URL/health; then
-          echo "✅ Health check passed"
-          curl -f $API_URL/products && echo "✅ Products endpoint passed" || echo "❌ Products endpoint failed"
-        else
-          echo "❌ Health check failed"
-          exit 1
-        fi
+          rm ec2-key.pem
 
-        echo "✅ Deployment successful!"
-        echo "🌐 Application URL: $API_URL"
-
-        rm ec2-key.pem
-
-    - name: Deployment summary
-      run: |
-        echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
-        echo "| Component | Status | URL |" >> $GITHUB_STEP_SUMMARY
-        echo "|-----------|--------|-----|" >> $GITHUB_STEP_SUMMARY
-        echo "| Infrastructure | ✅ ${{ needs.deploy-infrastructure.outputs.infrastructure_changed == 'true' && 'Updated' || 'Existing' }} | - |" >> $GITHUB_STEP_SUMMARY
-        echo "| Application | ✅ Deployed | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| API Health | ✅ Healthy | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}/health |" >> $GITHUB_STEP_SUMMARY
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Infrastructure | ✅ ${{ needs.deploy-infrastructure.outputs.infrastructure_changed == 'true' && 'Updated' || 'Existing' }} | - |" >> $GITHUB_STEP_SUMMARY
+          echo "| Application | ✅ Deployed | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| API Health | ✅ Healthy | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}/health |" >> $GITHUB_STEP_SUMMARY
