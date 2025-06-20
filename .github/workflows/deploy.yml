@@ -59,29 +59,6 @@ jobs:
         cd terraform
         terraform init
 
-    - name: Check Existing Infrastructure
-      id: check_infra
-      run: |
-        cd terraform
-        # Check if state exists and get current outputs
-        if terraform state list > /dev/null 2>&1; then
-          echo "=== Existing Infrastructure Found ==="
-          echo "Current resources in state:"
-          terraform state list
-          
-          echo "=== Current Outputs ==="
-          terraform output || echo "No outputs available yet"
-          
-          # Try to get existing EC2 IP
-          EXISTING_EC2_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || echo "")
-          if [ -n "$EXISTING_EC2_IP" ] && [ "$EXISTING_EC2_IP" != "" ]; then
-            echo "Found existing EC2 instance with IP: $EXISTING_EC2_IP"
-            echo "existing_ec2_ip=$EXISTING_EC2_IP" >> $GITHUB_OUTPUT
-          fi
-        else
-          echo "No existing infrastructure found"
-        fi
-
     - name: Terraform Plan
       id: plan
       run: |
@@ -89,20 +66,11 @@ jobs:
         terraform plan -detailed-exitcode -out=tfplan
         PLAN_EXIT_CODE=$?
         
-        echo "Terraform plan exit code: $PLAN_EXIT_CODE"
-        
         if [ $PLAN_EXIT_CODE -eq 0 ]; then
-          echo "No changes needed"
           echo "changes_needed=false" >> $GITHUB_OUTPUT
         elif [ $PLAN_EXIT_CODE -eq 2 ]; then
-          echo "Changes detected"
           echo "changes_needed=true" >> $GITHUB_OUTPUT
-          
-          # Show what will change
-          echo "=== Planned Changes ==="
-          terraform show tfplan
         else
-          echo "Plan failed"
           exit 1
         fi
 
@@ -110,30 +78,13 @@ jobs:
       id: terraform
       run: |
         cd terraform
-        
-        # Apply the plan (will be no-op if no changes needed)
         terraform apply -auto-approve tfplan
         
-        # Get all outputs
-        echo "=== Infrastructure Outputs ==="
-        terraform output
-        
-        # Capture outputs for other jobs
-        EC2_IP=$(terraform output -raw ec2_public_ip)
-        COGNITO_USER_POOL_ID=$(terraform output -raw cognito_user_pool_id)
-        COGNITO_CLIENT_ID=$(terraform output -raw cognito_user_pool_client_id)
-        COGNITO_IDENTITY_POOL_ID=$(terraform output -raw cognito_identity_pool_id)
-        RDS_ENDPOINT=$(terraform output -raw rds_endpoint)
-        
-        echo "EC2 Public IP: $EC2_IP"
-        echo "RDS Endpoint: $RDS_ENDPOINT"
-        
-        # Set outputs for other jobs
-        echo "ec2_public_ip=$EC2_IP" >> $GITHUB_OUTPUT
-        echo "cognito_user_pool_id=$COGNITO_USER_POOL_ID" >> $GITHUB_OUTPUT
-        echo "cognito_user_pool_client_id=$COGNITO_CLIENT_ID" >> $GITHUB_OUTPUT
-        echo "cognito_identity_pool_id=$COGNITO_IDENTITY_POOL_ID" >> $GITHUB_OUTPUT
-        echo "rds_endpoint=$RDS_ENDPOINT" >> $GITHUB_OUTPUT
+        echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
+        echo "cognito_user_pool_id=$(terraform output -raw cognito_user_pool_id)" >> $GITHUB_OUTPUT
+        echo "cognito_user_pool_client_id=$(terraform output -raw cognito_user_pool_client_id)" >> $GITHUB_OUTPUT
+        echo "cognito_identity_pool_id=$(terraform output -raw cognito_identity_pool_id)" >> $GITHUB_OUTPUT
+        echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> $GITHUB_OUTPUT
         echo "infrastructure_changed=${{ steps.plan.outputs.changes_needed }}" >> $GITHUB_OUTPUT
 
   test-backend:
@@ -228,7 +179,7 @@ jobs:
     needs: [deploy-infrastructure, test-backend, build-frontend]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -243,9 +194,32 @@ jobs:
       run: |
         cd backend
         cat > .env << EOF
-        DATABASE_URL=postgresql://catalog_user:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.rds_endpoint }}:5432/catalogdb
+        DATABASE_URL=postgresql://catalog_user:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.rds_endpoint }}/catalogdb
         SECRET_KEY=${{ secrets.FLASK_SECRET_KEY }}
         FLASK_ENV=production
+        EOF
+
+    - name: Create systemd service file
+      run: |
+        cat > catalog.service << 'EOF'
+        [Unit]
+        Description=Catalog Server Flask Application
+        After=network.target
+
+        [Service]
+        Type=simple
+        User=catalog
+        Group=catalog
+        WorkingDirectory=/opt/catalog-server/backend
+        Environment=PATH=/opt/catalog-server/backend/venv/bin
+        ExecStart=/opt/catalog-server/backend/venv/bin/python app.py
+        Restart=always
+        RestartSec=3
+        StandardOutput=journal
+        StandardError=journal
+
+        [Install]
+        WantedBy=multi-user.target
         EOF
 
     - name: Deploy to EC2
@@ -253,94 +227,34 @@ jobs:
         EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
         EC2_USER: ubuntu
         EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
-        INFRASTRUCTURE_CHANGED: ${{ needs.deploy-infrastructure.outputs.infrastructure_changed }}
       run: |
-        # Validate we have an EC2 host
-        if [ -z "$EC2_HOST" ] || [ "$EC2_HOST" = "null" ]; then
-          echo "ERROR: No EC2 host available"
-          echo "Infrastructure changed: $INFRASTRUCTURE_CHANGED"
-          exit 1
-        fi
-        
-        echo "Deploying to existing EC2 instance: $EC2_HOST"
-        echo "Infrastructure changed: $INFRASTRUCTURE_CHANGED"
-        
         echo "$EC2_KEY" > ec2-key.pem
         chmod 600 ec2-key.pem
-        
-        # Test SSH connectivity
-        echo "Testing SSH connection..."
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no -o ConnectTimeout=10 $EC2_USER@$EC2_HOST "echo 'SSH connection successful'"
-        
-        # Only wait for cloud-init if infrastructure changed
-        if [ "$INFRASTRUCTURE_CHANGED" = "true" ]; then
-          echo "Infrastructure changed, waiting for cloud-init..."
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "sudo cloud-init status --wait" || echo "Cloud-init check completed"
-        else
-          echo "Using existing infrastructure, skipping cloud-init wait"
-        fi
-        
-        echo "Ensuring directory structure..."
+
+        echo "Deploying to EC2: $EC2_HOST"
+
+        # Upload files
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend $EC2_USER@$EC2_HOST:/tmp/
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build $EC2_USER@$EC2_HOST:/tmp/frontend
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no catalog.service $EC2_USER@$EC2_HOST:/tmp/
+
+        # Deploy on remote server
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
           sudo mkdir -p /opt/catalog-server/backend /opt/catalog-server/frontend
+          sudo cp -r /tmp/backend/* /opt/catalog-server/backend/
+          sudo cp -r /tmp/frontend/* /opt/catalog-server/frontend/
           sudo chown -R catalog:catalog /opt/catalog-server
           sudo chmod -R 755 /opt/catalog-server
-        "
-        
-        # Deploy nginx config if it exists
-        if [ -f nginx/catalog.conf ]; then
-          echo "Deploying nginx config..."
-          scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx/catalog.conf $EC2_USER@$EC2_HOST:/tmp/
-        fi
-        
-        echo "Deploying backend files..."
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend/* $EC2_USER@$EC2_HOST:/tmp/backend-files/
-        
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          # Stop existing service
-          sudo systemctl stop catalog || true
-          
-          # Update backend files
-          sudo cp -r /tmp/backend-files/* /opt/catalog-server/backend/
-          sudo chown -R catalog:catalog /opt/catalog-server/backend
-          sudo rm -rf /tmp/backend-files
-          
-          # Ensure dependencies are installed
-          cd /opt/catalog-server/backend
-          source venv/bin/activate
-          pip install --no-deps Flask-SQLAlchemy Flask-CORS python-dotenv || true
-        "
-        
-        echo "Deploying frontend files..."
-        scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build/* $EC2_USER@$EC2_HOST:/tmp/frontend-files/
-        
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          sudo cp -r /tmp/frontend-files/* /opt/catalog-server/frontend/
-          sudo chown -R catalog:catalog /opt/catalog-server/frontend
-          sudo rm -rf /tmp/frontend-files
-        "
-        
-        echo "Configuring services..."
-        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          # Update nginx config if provided
-          if [ -f /tmp/catalog.conf ]; then
-            sudo cp /tmp/catalog.conf /etc/nginx/sites-available/catalog
-            sudo ln -sf /etc/nginx/sites-available/catalog /etc/nginx/sites-enabled/
-            sudo rm -f /etc/nginx/sites-enabled/default
-            sudo nginx -t && echo 'Nginx config valid' || echo 'Nginx config invalid, using default'
-          fi
-          
-          # Ensure systemd service exists and is correct
+
+          sudo cp /tmp/catalog.service /etc/systemd/system/
           sudo systemctl daemon-reload
           sudo systemctl enable catalog
+          sudo systemctl stop catalog || true
           sudo systemctl start catalog
           sudo systemctl restart nginx
-          
-          # Show service status
-          echo '=== Service Status ==='
-          sudo systemctl status catalog --no-pager || true
-          sudo systemctl status nginx --no-pager || true
         "
+
+        rm ec2-key.pem catalog.service
 
     - name: Health check
       env:
@@ -351,35 +265,37 @@ jobs:
       run: |
         echo "$EC2_KEY" > ec2-key.pem
         chmod 600 ec2-key.pem
-        
+
         echo "Waiting for services to start..."
         sleep 30
-        
+
         echo "=== Service Health Check ==="
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          sudo systemctl is-active catalog && echo 'Catalog service: ACTIVE' || echo 'Catalog service: INACTIVE'
-          sudo systemctl is-active nginx && echo 'Nginx service: ACTIVE' || echo 'Nginx service: INACTIVE'
-          curl -f http://localhost:5000/health && echo 'Local health check: PASSED' || echo 'Local health check: FAILED'
-          sudo ss -tlnp | grep :5000 && echo 'Port 5000: LISTENING' || echo 'Port 5000: NOT LISTENING'
+          echo 'Catalog service status:'
+          sudo systemctl status catalog --no-pager || true
+          
+          echo 'Service logs:'
+          sudo journalctl -u catalog --no-pager -n 20 || true
+          
+          echo 'Port check:'
+          sudo ss -tlnp | grep :5000 || echo 'Port 5000 not listening'
+          
+          echo 'Testing health endpoint:'
+          curl -f http://localhost:5000/health || echo 'Health endpoint failed'
         "
-        
+
         echo "=== External Health Check ==="
         if curl -f $API_URL/health; then
-          echo "✅ Health check PASSED"
-          curl -f $API_URL/products && echo "✅ Products endpoint PASSED" || echo "❌ Products endpoint FAILED"
+          echo "✅ Health check passed"
+          curl -f $API_URL/products && echo "✅ Products endpoint passed" || echo "❌ Products endpoint failed"
         else
-          echo "❌ Health check FAILED"
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-            echo '=== Debug Info ==='
-            sudo journalctl -u catalog --no-pager -n 20
-            sudo tail -10 /var/log/nginx/error.log || echo 'No nginx error logs'
-          "
+          echo "❌ Health check failed"
           exit 1
         fi
-        
+
         echo "✅ Deployment successful!"
         echo "🌐 Application URL: $API_URL"
-        
+
         rm ec2-key.pem
 
     - name: Deployment summary

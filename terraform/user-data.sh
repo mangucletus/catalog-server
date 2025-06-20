@@ -56,6 +56,22 @@ pip install psycopg2-binary==2.9.7
 pip install python-dotenv==1.0.0
 pip install gunicorn==21.2.0
 
+# Create a basic app.py that will be replaced by deployment
+cat > /opt/catalog-server/backend/app.py << 'EOF'
+from flask import Flask, jsonify
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy', 'message': 'Basic app running, waiting for deployment'})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+EOF
+
 # Create systemd service for catalog app
 echo "Creating systemd service..."
 cat > /etc/systemd/system/catalog.service << 'EOF'
@@ -72,6 +88,8 @@ Environment=PATH=/opt/catalog-server/backend/venv/bin
 ExecStart=/opt/catalog-server/backend/venv/bin/python app.py
 Restart=always
 RestartSec=3
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -100,7 +118,7 @@ server {
     server_name _;
 
     location / {
-        try_files $uri $uri/ =404;
+        try_files $uri $uri/ /index.html;
     }
 
     location /health {
@@ -118,6 +136,11 @@ server {
 EOF
 
 systemctl restart nginx
+
+# Wait for database to be available (template variables)
+echo "Database will be available at: ${db_host}"
+echo "Database name: ${db_name}"
+echo "Database user: ${db_username}"
 
 echo "User-data script completed successfully at $(date)" >> /var/log/user-data.log
 echo "Ready for application deployment" >> /var/log/user-data.log
