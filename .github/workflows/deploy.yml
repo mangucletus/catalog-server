@@ -176,8 +176,7 @@ jobs:
 
       - name: Generate backend environment file
         run: |
-          cd backend
-          cat > .env <<EOF
+          cat > backend_env <<EOF
           DATABASE_URL=postgresql://catalog_user:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.rds_endpoint }}/catalogdb
           SECRET_KEY=${{ secrets.FLASK_SECRET_KEY }}
           FLASK_ENV=production
@@ -220,18 +219,27 @@ jobs:
           scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend $EC2_USER@$EC2_HOST:/tmp/
           scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build $EC2_USER@$EC2_HOST:/tmp/frontend
           scp -i ec2-key.pem -o StrictHostKeyChecking=no catalog.service $EC2_USER@$EC2_HOST:/tmp/
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no backend_env $EC2_USER@$EC2_HOST:/tmp/
 
           ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
             sudo systemctl stop catalog || true
 
+            # Create directories and copy files
             sudo mkdir -p /opt/catalog-server/backend /opt/catalog-server/frontend
             sudo cp -r /tmp/backend/* /opt/catalog-server/backend/
             sudo cp -r /tmp/frontend/* /opt/catalog-server/frontend/
+            sudo cp /tmp/backend_env /opt/catalog-server/backend/.env
             sudo chown -R catalog:catalog /opt/catalog-server
             sudo chmod -R 755 /opt/catalog-server
 
+            # Ensure virtual environment exists
+            if [ ! -d "/opt/catalog-server/backend/venv" ]; then
+              echo 'Creating virtual environment...'
+              sudo -u catalog bash -c 'cd /opt/catalog-server/backend && python3 -m venv venv'
+            fi
+
             echo 'Installing Python dependencies...'
-            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && pip install -r requirements.txt'
+            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt'
 
             echo 'Testing Flask-CORS import...'
             sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "from flask_cors import CORS; print(\"Flask-CORS imported successfully\")"' || echo 'Flask-CORS import failed'
@@ -239,23 +247,27 @@ jobs:
             echo 'Testing Flask app import...'
             sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "try: from app import app; print(\"Flask app imported successfully\"); except Exception as e: print(\"Flask app import failed:\", str(e))"' || echo 'Flask app import test completed'
 
+            # Initialize database tables
+            echo 'Initializing database...'
+            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "try: from app import app, db; app.app_context().push(); db.create_all(); print(\"Database tables created successfully\"); except Exception as e: print(\"Database initialization failed:\", str(e))"' || echo 'Database initialization completed with errors'
+
             sudo cp /tmp/catalog.service /etc/systemd/system/
             sudo systemctl daemon-reload
             sudo systemctl enable catalog
             sudo systemctl start catalog
 
-            sleep 5
+            sleep 10
             if sudo systemctl is-active --quiet catalog; then
               echo 'Catalog service started successfully'
             else
               echo 'Service failed to start, checking logs:'
-              sudo journalctl -u catalog --no-pager -n 15
+              sudo journalctl -u catalog --no-pager -n 20
             fi
 
             sudo systemctl restart nginx
           EOF
 
-          rm ec2-key.pem catalog.service
+          rm ec2-key.pem catalog.service backend_env
 
       - name: Health check
         env:
@@ -268,7 +280,7 @@ jobs:
           chmod 600 ec2-key.pem
 
           echo "Waiting for services to start..."
-          sleep 30
+          sleep 45
 
           echo "=== Service Health Check ==="
           ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
