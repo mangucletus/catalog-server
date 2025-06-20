@@ -144,7 +144,7 @@ jobs:
           REACT_APP_USER_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_id }}
           REACT_APP_USER_POOL_CLIENT_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_client_id }}
           REACT_APP_IDENTITY_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_identity_pool_id }}
-          REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+          REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}/api
           REACT_APP_AWS_REGION=${{ env.AWS_REGION }}
           EOF
 
@@ -182,6 +182,43 @@ jobs:
           FLASK_ENV=production
           EOF
 
+      - name: Create nginx configuration file
+        run: |
+          cat > nginx-catalog.conf <<'NGINX_CONF'
+          server {
+              listen 80;
+              server_name _;
+
+              # Serve frontend static files
+              location / {
+                  root /opt/catalog-server/frontend;
+                  index index.html;
+                  try_files $uri $uri/ /index.html;
+              }
+
+              # Proxy API requests to Flask backend
+              location /api/ {
+                  proxy_pass http://127.0.0.1:5000/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+
+              # Direct access to backend endpoints
+              location /health {
+                  proxy_pass http://127.0.0.1:5000/health;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+
+              location /products {
+                  proxy_pass http://127.0.0.1:5000/products;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+          }
+          NGINX_CONF
       - name: Create systemd service file
         run: |
           cat > catalog.service <<EOF
@@ -195,7 +232,8 @@ jobs:
           Group=catalog
           WorkingDirectory=/opt/catalog-server/backend
           Environment=PATH=/opt/catalog-server/backend/venv/bin
-          ExecStart=/opt/catalog-server/backend/venv/bin/python app.py
+          Environment=FLASK_ENV=production
+          ExecStart=/opt/catalog-server/backend/venv/bin/gunicorn --bind 127.0.0.1:5000 --workers 3 app:app
           Restart=always
           RestartSec=3
           StandardOutput=journal
@@ -220,6 +258,7 @@ jobs:
           scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build $EC2_USER@$EC2_HOST:/tmp/frontend
           scp -i ec2-key.pem -o StrictHostKeyChecking=no catalog.service $EC2_USER@$EC2_HOST:/tmp/
           scp -i ec2-key.pem -o StrictHostKeyChecking=no backend_env $EC2_USER@$EC2_HOST:/tmp/
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx-catalog.conf $EC2_USER@$EC2_HOST:/tmp/
 
           ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
             sudo systemctl stop catalog || true
@@ -245,11 +284,11 @@ jobs:
             sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "from flask_cors import CORS; print(\"Flask-CORS imported successfully\")"' || echo 'Flask-CORS import failed'
 
             echo 'Testing Flask app import...'
-            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "try: from app import app; print(\"Flask app imported successfully\"); except Exception as e: print(\"Flask app import failed:\", str(e))"' || echo 'Flask app import test completed'
+            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "import sys; exec(\"try:\\n    from app import app\\n    print(\\\"Flask app imported successfully\\\")\\nexcept Exception as e:\\n    print(\\\"Flask app import failed:\\\", str(e))\")"' || echo 'Flask app import test completed'
 
             # Initialize database tables
             echo 'Initializing database...'
-            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "try: from app import app, db; app.app_context().push(); db.create_all(); print(\"Database tables created successfully\"); except Exception as e: print(\"Database initialization failed:\", str(e))"' || echo 'Database initialization completed with errors'
+            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "import sys; exec(\"try:\\n    from app import app, db\\n    with app.app_context():\\n        db.create_all()\\n        print(\\\"Database tables created successfully\\\")\\nexcept Exception as e:\\n    print(\\\"Database initialization failed:\\\", str(e))\")"' || echo 'Database initialization completed with errors'
 
             sudo cp /tmp/catalog.service /etc/systemd/system/
             sudo systemctl daemon-reload
@@ -264,10 +303,16 @@ jobs:
               sudo journalctl -u catalog --no-pager -n 20
             fi
 
+            # Configure nginx for the application
+            echo 'Configuring nginx...'
+            sudo cp /tmp/nginx-catalog.conf /etc/nginx/sites-available/catalog-server
+            sudo ln -sf /etc/nginx/sites-available/catalog-server /etc/nginx/sites-enabled/
+            sudo rm -f /etc/nginx/sites-enabled/default
+            sudo nginx -t
             sudo systemctl restart nginx
           EOF
 
-          rm ec2-key.pem catalog.service backend_env
+          rm ec2-key.pem catalog.service backend_env nginx-catalog.conf
 
       - name: Health check
         env:
