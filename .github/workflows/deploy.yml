@@ -109,10 +109,12 @@ jobs:
           SECRET_KEY: test-secret-key
         run: |
           cd backend
-          python -c "from app import app, db; \
-          with app.app_context(): \
-            db.create_all(); \
-            print('Backend tests passed!')"
+          python -c "
+          from app import app, db
+          with app.app_context():
+              db.create_all()
+              print('Backend tests passed!')
+          "
 
   build-frontend:
     needs: deploy-infrastructure
@@ -235,7 +237,7 @@ jobs:
             sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "from flask_cors import CORS; print(\"Flask-CORS imported successfully\")"' || echo 'Flask-CORS import failed'
 
             echo 'Testing Flask app import...'
-            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c '\''try:\n  from app import app\n  print("Flask app imported successfully")\nexcept Exception as e:\n  print(f"Flask app import failed: {e}")'\'' ' || echo 'Flask app import test completed'
+            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "try: from app import app; print(\"Flask app imported successfully\"); except Exception as e: print(\"Flask app import failed:\", str(e))"' || echo 'Flask app import test completed'
 
             sudo cp /tmp/catalog.service /etc/systemd/system/
             sudo systemctl daemon-reload
