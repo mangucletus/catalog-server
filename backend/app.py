@@ -1,177 +1,183 @@
 from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
-from models import db, Product
-from config import Config
+import os
+from dotenv import load_dotenv
 
-# Create Flask application instance
+# Load environment variables
+load_dotenv()
+
 app = Flask(__name__)
+CORS(app)
 
-# Load configuration from config.py
-app.config.from_object(Config)
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
 
-# Enable CORS (Cross-Origin Resource Sharing) for frontend communication
-CORS(app, origins=app.config['CORS_ORIGINS'])
+db = SQLAlchemy(app)
 
-# Initialize database with Flask app
-db.init_app(app)
+# Product model (adjust according to your existing model)
+class Product(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text)
+    price = db.Column(db.Float, nullable=False)
+    category = db.Column(db.String(50))
+    image_url = db.Column(db.String(255))
+    stock_quantity = db.Column(db.Integer, default=0)
 
-@app.route('/health', methods=['GET'])
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'price': self.price,
+            'category': self.category,
+            'image_url': self.image_url,
+            'stock_quantity': self.stock_quantity
+        }
+
+# Health check endpoints (both with and without /api prefix)
+@app.route('/health')
+@app.route('/api/health')
 def health_check():
-    """Health check endpoint to verify server is running"""
-    return jsonify({'status': 'healthy', 'message': 'Catalog server is running'})
+    return jsonify({
+        "status": "healthy",
+        "message": "Catalog server is running"
+    })
 
-@app.route('/products', methods=['GET'])
+# Get all products (both with and without /api prefix)
+@app.route('/products')
+@app.route('/api/products')
 def get_products():
-    """Get all products from database"""
     try:
-        # Query all products from database
         products = Product.query.all()
-        
-        # Convert products to dictionary format for JSON response
-        products_list = [product.to_dict() for product in products]
+        products_data = [product.to_dict() for product in products]
         
         return jsonify({
-            'success': True,
-            'data': products_list,
-            'count': len(products_list)
+            "success": True,
+            "data": products_data,
+            "count": len(products_data)
         })
     except Exception as e:
-        # Return error if something goes wrong
         return jsonify({
-            'success': False,
-            'error': str(e)
+            "success": False,
+            "error": str(e)
         }), 500
 
-@app.route('/products/<int:product_id>', methods=['GET'])
+# Get single product by ID
+@app.route('/products/<int:product_id>')
+@app.route('/api/products/<int:product_id>')
 def get_product(product_id):
-    """Get a specific product by ID"""
     try:
-        # Find product by ID or return 404 if not found
         product = Product.query.get_or_404(product_id)
-        
         return jsonify({
-            'success': True,
-            'data': product.to_dict()
+            "success": True,
+            "data": product.to_dict()
         })
     except Exception as e:
         return jsonify({
-            'success': False,
-            'error': str(e)
+            "success": False,
+            "error": str(e)
         }), 404
 
-@app.route('/products', methods=['POST'])
-def create_product():
-    """Create a new product"""
+# Get products by category (NEW ROUTE - this was missing!)
+@app.route('/products/category/<category>')
+@app.route('/api/products/category/<category>')
+def get_products_by_category(category):
     try:
-        # Get JSON data from request
+        products = Product.query.filter_by(category=category).all()
+        products_data = [product.to_dict() for product in products]
+        
+        return jsonify({
+            "success": True,
+            "data": products_data,
+            "count": len(products_data)
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+# Create product (admin function)
+@app.route('/products', methods=['POST'])
+@app.route('/api/products', methods=['POST'])
+def create_product():
+    try:
         data = request.get_json()
         
-        # Validate required fields
-        if not data or not data.get('name') or not data.get('price'):
-            return jsonify({
-                'success': False,
-                'error': 'Name and price are required'
-            }), 400
-        
-        # Create new product instance
-        new_product = Product(
+        product = Product(
             name=data['name'],
-            description=data.get('description', ''),
-            price=float(data['price']),
-            category=data.get('category', ''),
-            stock_quantity=data.get('stock_quantity', 0),
-            image_url=data.get('image_url', '')
+            description=data.get('description'),
+            price=data['price'],
+            category=data.get('category'),
+            image_url=data.get('image_url'),
+            stock_quantity=data.get('stock_quantity', 0)
         )
         
-        # Add to database
-        db.session.add(new_product)
+        db.session.add(product)
         db.session.commit()
         
         return jsonify({
-            'success': True,
-            'data': new_product.to_dict(),
-            'message': 'Product created successfully'
+            "success": True,
+            "data": product.to_dict()
         }), 201
-        
     except Exception as e:
-        # Rollback database changes if error occurs
         db.session.rollback()
         return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+            "success": False,
+            "error": str(e)
+        }), 400
 
-@app.route('/products/category/<category>', methods=['GET'])
-def get_products_by_category(category):
-    """Get products by category"""
-    try:
-        # Query products by category
-        products = Product.query.filter_by(category=category).all()
-        products_list = [product.to_dict() for product in products]
+# Initialize database with sample data
+def init_sample_data():
+    if Product.query.count() == 0:
+        sample_products = [
+            Product(
+                name="Laptop Pro",
+                description="High-performance laptop for professionals",
+                price=1299.99,
+                category="Electronics",
+                image_url="https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=300",
+                stock_quantity=15
+            ),
+            Product(
+                name="Smartphone X",
+                description="Latest smartphone with amazing camera",
+                price=899.99,
+                category="Electronics",
+                image_url="https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=300",
+                stock_quantity=25
+            ),
+            Product(
+                name="Coffee Maker",
+                description="Automatic coffee maker for perfect brew",
+                price=129.99,
+                category="Home",
+                image_url="https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=300",
+                stock_quantity=8
+            ),
+            Product(
+                name="Running Shoes",
+                description="Comfortable running shoes for daily exercise",
+                price=89.99,
+                category="Sports",
+                image_url="https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=300",
+                stock_quantity=30
+            )
+        ]
         
-        return jsonify({
-            'success': True,
-            'data': products_list,
-            'count': len(products_list),
-            'category': category
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-def create_sample_data():
-    """Create sample products for testing"""
-    sample_products = [
-        {
-            'name': 'Laptop Pro',
-            'description': 'High-performance laptop for professionals',
-            'price': 1299.99,
-            'category': 'Electronics',
-            'stock_quantity': 15,
-            'image_url': 'https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=300'
-        },
-        {
-            'name': 'Smartphone X',
-            'description': 'Latest smartphone with amazing camera',
-            'price': 899.99,
-            'category': 'Electronics',
-            'stock_quantity': 25,
-            'image_url': 'https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=300'
-        },
-        {
-            'name': 'Coffee Maker',
-            'description': 'Automatic coffee maker for perfect brew',
-            'price': 129.99,
-            'category': 'Home',
-            'stock_quantity': 8,
-            'image_url': 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=300'
-        },
-        {
-            'name': 'Running Shoes',
-            'description': 'Comfortable running shoes for daily exercise',
-            'price': 89.99,
-            'category': 'Sports',
-            'stock_quantity': 30,
-            'image_url': 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=300'
-        }
-    ]
-    
-    for product_data in sample_products:
-        # Check if product already exists
-        existing = Product.query.filter_by(name=product_data['name']).first()
-        if not existing:
-            product = Product(**product_data)
+        for product in sample_products:
             db.session.add(product)
-    
-    db.session.commit()
+        db.session.commit()
+        print("Sample data initialized!")
 
 if __name__ == '__main__':
-    # Create database tables and sample data
     with app.app_context():
         db.create_all()
-        create_sample_data()
+        init_sample_data()
     
-    # Run Flask development server
+    # For development
     app.run(host='0.0.0.0', port=5000, debug=True)
