@@ -152,20 +152,27 @@ jobs:
         run: |
           cd frontend
           
-          # Create public directory and copy our simple index.html
+          # Remove any old public directory
+          rm -rf public
+          
+          # Create fresh public directory with our simple index.html
           mkdir -p public
           cp index.html public/index.html
           
-          # Build the React app normally - this will generate the JS/CSS bundles
+          # Verify our simple HTML is in place
+          echo "=== Checking public/index.html content ==="
+          head -10 public/index.html
+          
+          # Build the React app - this will use our simple HTML as template
           npm run build
+          
+          # Verify the built index.html has our simple structure
+          echo "=== Checking build/index.html content ==="
+          head -10 build/index.html
           
           # Verify build contents
           echo "Build directory contents:"
           ls -la build/
-          
-          # Verify index.html is in build
-          echo "Checking for index.html in build:"
-          ls -la build/index.html || echo "index.html not found in build!"
 
       - name: Upload frontend build
         uses: actions/upload-artifact@v4
@@ -294,8 +301,12 @@ jobs:
             sudo cp -r /tmp/backend/* /opt/catalog-server/backend/
             sudo cp -r /tmp/frontend/* /opt/catalog-server/frontend/
             sudo cp /tmp/backend_env /opt/catalog-server/backend/.env
-            sudo chown -R catalog:catalog /opt/catalog-server
-            sudo chmod -R 755 /opt/catalog-server
+            
+            # Fix nginx ownership and permissions
+            sudo chown -R www-data:www-data /opt/catalog-server/frontend/
+            sudo chown -R catalog:catalog /opt/catalog-server/backend/
+            sudo chmod -R 755 /opt/catalog-server/frontend/
+            sudo chmod -R 755 /opt/catalog-server/backend/
 
             # Debug: Check if frontend files exist and structure
             echo 'Checking frontend files...'
@@ -304,6 +315,8 @@ jobs:
             ls -la /opt/catalog-server/frontend/index.html || echo 'index.html not found!'
             echo 'Checking build directory structure...'
             find /opt/catalog-server/frontend/ -name "*.html" -o -name "*.js" -o -name "*.css" | head -10
+            echo 'Testing if index.html is readable by nginx...'
+            sudo -u www-data cat /opt/catalog-server/frontend/index.html | head -5 || echo 'Cannot read index.html as www-data'
 
             # Ensure virtual environment exists
             if [ ! -d "/opt/catalog-server/backend/venv" ]; then
