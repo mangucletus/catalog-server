@@ -152,7 +152,8 @@ jobs:
         run: |
           cd frontend
           
-          # First, replace the public/index.html with our simple version
+          # Create public directory and copy our simple index.html
+          mkdir -p public
           cp index.html public/index.html
           
           # Build the React app normally - this will generate the JS/CSS bundles
@@ -161,6 +162,10 @@ jobs:
           # Verify build contents
           echo "Build directory contents:"
           ls -la build/
+          
+          # Verify index.html is in build
+          echo "Checking for index.html in build:"
+          ls -la build/index.html || echo "index.html not found in build!"
 
       - name: Upload frontend build
         uses: actions/upload-artifact@v4
