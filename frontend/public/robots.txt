@@ -1,7 +1,0 @@
-# Robots.txt for Catalog Server
-
-User-agent: *
-Allow: /
-
-# Allow search engines to crawl the main application
-Allow: /

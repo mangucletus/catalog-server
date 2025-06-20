@@ -4,7 +4,6 @@ import { apiService } from '../services/api';
 import './HomePage.css';
 
 const HomePage = ({ user, signOut }) => {
-  // State for storing products and loading status
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -12,22 +11,33 @@ const HomePage = ({ user, signOut }) => {
 
   // Fetch products when component mounts
   useEffect(() => {
+    console.log('HomePage mounted, fetching products...');
     fetchProducts();
   }, []);
 
   const fetchProducts = async () => {
     try {
+      console.log('Fetching products...');
       setLoading(true);
-      const response = await apiService.getProducts();
+      setError(null);
       
-      if (response.success) {
-        setProducts(response.data);
+      // First test the health endpoint
+      await apiService.healthCheck();
+      console.log('Health check passed');
+      
+      // Then fetch products
+      const response = await apiService.getProducts();
+      console.log('Products response:', response);
+      
+      if (response && response.success) {
+        setProducts(response.data || []);
+        console.log('Products loaded:', response.data?.length || 0);
       } else {
-        setError('Failed to fetch products');
+        setError('Failed to fetch products: Invalid response format');
       }
     } catch (err) {
-      setError('Error connecting to server. Please try again later.');
-      console.error('Error fetching products:', err);
+      console.error('Error in fetchProducts:', err);
+      setError(`Error connecting to server: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -37,22 +47,23 @@ const HomePage = ({ user, signOut }) => {
   const filterProductsByCategory = async (category) => {
     try {
       setLoading(true);
+      setError(null);
       setSelectedCategory(category);
       
       if (category === 'all') {
         const response = await apiService.getProducts();
-        if (response.success) {
-          setProducts(response.data);
+        if (response && response.success) {
+          setProducts(response.data || []);
         }
       } else {
         const response = await apiService.getProductsByCategory(category);
-        if (response.success) {
-          setProducts(response.data);
+        if (response && response.success) {
+          setProducts(response.data || []);
         }
       }
     } catch (err) {
-      setError('Error filtering products');
       console.error('Error filtering products:', err);
+      setError(`Error filtering products: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -69,6 +80,7 @@ const HomePage = ({ user, signOut }) => {
       <div className="loading-container">
         <div className="loading-spinner"></div>
         <p>Loading products...</p>
+        <small>Connecting to server...</small>
       </div>
     );
   }
@@ -76,11 +88,15 @@ const HomePage = ({ user, signOut }) => {
   if (error) {
     return (
       <div className="error-container">
-        <h2>Error</h2>
+        <h2>Connection Error</h2>
         <p>{error}</p>
         <button onClick={fetchProducts} className="retry-btn">
           Try Again
         </button>
+        <div className="debug-info">
+          <p><strong>API URL:</strong> {process.env.REACT_APP_API_URL || 'http://localhost:5000'}</p>
+          <p><strong>User:</strong> {user?.username || 'Anonymous'}</p>
+        </div>
       </div>
     );
   }
@@ -92,7 +108,7 @@ const HomePage = ({ user, signOut }) => {
         <div className="header-content">
           <h1>Product Catalog</h1>
           <div className="user-info">
-            <span>Welcome, {user?.username || 'User'}!</span>
+            <span>Welcome, {user?.username || user?.attributes?.email || 'User'}!</span>
             <button onClick={signOut} className="sign-out-btn">
               Sign Out
             </button>
@@ -106,7 +122,7 @@ const HomePage = ({ user, signOut }) => {
           className={`category-btn ${selectedCategory === 'all' ? 'active' : ''}`}
           onClick={() => filterProductsByCategory('all')}
         >
-          All Products
+          All Products ({products.length})
         </button>
         {getCategories().map(category => (
           <button 
@@ -125,6 +141,9 @@ const HomePage = ({ user, signOut }) => {
           <div className="no-products">
             <h2>No products found</h2>
             <p>There are no products available at the moment.</p>
+            <button onClick={fetchProducts} className="retry-btn">
+              Refresh Products
+            </button>
           </div>
         ) : (
           <div className="products-grid">

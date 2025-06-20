@@ -144,14 +144,23 @@ jobs:
           REACT_APP_USER_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_id }}
           REACT_APP_USER_POOL_CLIENT_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_client_id }}
           REACT_APP_IDENTITY_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_identity_pool_id }}
-          REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}/api
+          REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
           REACT_APP_AWS_REGION=${{ env.AWS_REGION }}
           EOF
 
       - name: Build frontend
         run: |
           cd frontend
+          
+          # First, replace the public/index.html with our simple version
+          cp index.html public/index.html
+          
+          # Build the React app normally - this will generate the JS/CSS bundles
           npm run build
+          
+          # Verify build contents
+          echo "Build directory contents:"
+          ls -la build/
 
       - name: Upload frontend build
         uses: actions/upload-artifact@v4
@@ -194,28 +203,40 @@ jobs:
                   root /opt/catalog-server/frontend;
                   index index.html;
                   try_files $uri $uri/ /index.html;
+                  
+                  # Add headers for better caching
+                  add_header Cache-Control "public, max-age=31536000" always;
+                  
+                  # Handle HTML files differently
+                  location ~* \.html$ {
+                      add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+                  }
               }
 
-              # Proxy API requests to Flask backend
-              location /api/ {
-                  proxy_pass http://127.0.0.1:5000/;
+              # Proxy ALL API requests to Flask backend (no /api prefix needed)
+              location /health {
+                  proxy_pass http://127.0.0.1:5000/health;
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                   proxy_set_header X-Forwarded-Proto $scheme;
               }
 
-              # Direct access to backend endpoints
-              location /health {
-                  proxy_pass http://127.0.0.1:5000/health;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-              }
-
               location /products {
                   proxy_pass http://127.0.0.1:5000/products;
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+              
+              # Handle products with paths (like /products/1 or /products/category/Electronics)
+              location ~ ^/products/ {
+                  proxy_pass http://127.0.0.1:5000$request_uri;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
               }
           }
           NGINX_CONF
@@ -271,6 +292,14 @@ jobs:
             sudo chown -R catalog:catalog /opt/catalog-server
             sudo chmod -R 755 /opt/catalog-server
 
+            # Debug: Check if frontend files exist and structure
+            echo 'Checking frontend files...'
+            ls -la /opt/catalog-server/frontend/
+            echo 'Checking for index.html...'
+            ls -la /opt/catalog-server/frontend/index.html || echo 'index.html not found!'
+            echo 'Checking build directory structure...'
+            find /opt/catalog-server/frontend/ -name "*.html" -o -name "*.js" -o -name "*.css" | head -10
+
             # Ensure virtual environment exists
             if [ ! -d "/opt/catalog-server/backend/venv" ]; then
               echo 'Creating virtual environment...'
@@ -308,8 +337,23 @@ jobs:
             sudo cp /tmp/nginx-catalog.conf /etc/nginx/sites-available/catalog-server
             sudo ln -sf /etc/nginx/sites-available/catalog-server /etc/nginx/sites-enabled/
             sudo rm -f /etc/nginx/sites-enabled/default
+            
+            # Debug nginx config
+            echo 'Testing nginx configuration...'
             sudo nginx -t
+            
+            # Debug: Check what nginx is actually serving
+            echo 'Checking nginx sites-enabled...'
+            ls -la /etc/nginx/sites-enabled/
+            
+            echo 'Checking nginx config content...'
+            sudo cat /etc/nginx/sites-available/catalog-server
+            
             sudo systemctl restart nginx
+            
+            # Test if nginx is serving files correctly
+            echo 'Testing nginx file serving...'
+            curl -I http://localhost/ || echo 'Nginx not responding on localhost'
           EOF
 
           rm ec2-key.pem catalog.service backend_env nginx-catalog.conf
@@ -326,6 +370,24 @@ jobs:
 
           echo "Waiting for services to start..."
           sleep 45
+
+          echo "=== Debugging Frontend Files ==="
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
+            echo 'Frontend directory contents:'
+            ls -la /opt/catalog-server/frontend/
+            
+            echo 'Looking for index.html:'
+            find /opt/catalog-server/frontend/ -name "index.html" -type f
+            
+            echo 'Nginx error logs:'
+            sudo tail -n 20 /var/log/nginx/error.log || echo 'No nginx error log found'
+            
+            echo 'Nginx access logs:'
+            sudo tail -n 10 /var/log/nginx/access.log || echo 'No nginx access log found'
+            
+            echo 'Testing direct file access:'
+            curl -I http://localhost/index.html || echo 'index.html not accessible'
+          EOF
 
           echo "=== Service Health Check ==="
           ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
