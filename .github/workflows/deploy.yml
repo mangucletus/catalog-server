@@ -12,11 +12,9 @@ env:
   PYTHON_VERSION: '3.10'
 
 jobs:
-  # Infrastructure deployment
   deploy-infrastructure:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
-    
     outputs:
       ec2_public_ip: ${{ steps.terraform.outputs.ec2_public_ip }}
       cognito_user_pool_id: ${{ steps.terraform.outputs.cognito_user_pool_id }}
@@ -70,15 +68,12 @@ jobs:
       run: |
         cd terraform
         terraform apply -auto-approve
-        
-        # Capture outputs
         echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
         echo "cognito_user_pool_id=$(terraform output -raw cognito_user_pool_id)" >> $GITHUB_OUTPUT
         echo "cognito_user_pool_client_id=$(terraform output -raw cognito_user_pool_client_id)" >> $GITHUB_OUTPUT
         echo "cognito_identity_pool_id=$(terraform output -raw cognito_identity_pool_id)" >> $GITHUB_OUTPUT
         echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> $GITHUB_OUTPUT
 
-  # Test backend
   test-backend:
     runs-on: ubuntu-latest
     
@@ -124,7 +119,6 @@ jobs:
             print('Backend tests passed!')
         "
 
-  # Build frontend
   build-frontend:
     needs: deploy-infrastructure
     runs-on: ubuntu-latest
@@ -168,7 +162,6 @@ jobs:
         name: frontend-build
         path: frontend/build/
 
-  # Deploy application
   deploy-application:
     needs: [deploy-infrastructure, test-backend, build-frontend]
     runs-on: ubuntu-latest
@@ -199,115 +192,92 @@ jobs:
         EC2_USER: ubuntu
         EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
       run: |
-        # Create SSH key file
         echo "$EC2_KEY" > ec2-key.pem
         chmod 600 ec2-key.pem
         
-        # Wait for EC2 to be ready and user-data script to complete
-        echo "Waiting for EC2 instance and user-data script..."
+        echo "Waiting for EC2 instance..."
         sleep 120
         
-        # Wait for user-data script to complete by checking cloud-init status
-        echo "Checking if user-data script completed..."
-        timeout 300 ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          while ! sudo cloud-init status --wait; do
-            echo 'Waiting for cloud-init to complete...'
-            sleep 10
-          done
-          echo 'Cloud-init completed successfully'
-        "
+        echo "Checking cloud-init status..."
+        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "sudo cloud-init status --wait"
         
-        # Ensure directory structure exists and has correct permissions
+        echo "Setting up directories..."
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          sudo mkdir -p /opt/catalog-server/backend
-          sudo mkdir -p /opt/catalog-server/frontend
+          sudo mkdir -p /opt/catalog-server/backend /opt/catalog-server/frontend
           sudo chown -R catalog:catalog /opt/catalog-server
           sudo chmod -R 755 /opt/catalog-server
         "
         
-        # Deploy nginx config to tmp first (only if it exists)
         if [ -f nginx/catalog.conf ]; then
-          echo "Deploying custom nginx config..."
+          echo "Deploying nginx config..."
           scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx/catalog.conf $EC2_USER@$EC2_HOST:/tmp/
-        else
-          echo "No custom nginx config found, using default from user-data..."
         fi
         
-        # Deploy backend files to tmp, then move with proper permissions
         echo "Deploying backend files..."
         scp -i ec2-key.pem -o StrictHostKeyChecking=no -r backend/* $EC2_USER@$EC2_HOST:/tmp/backend-files/
+        
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+          sudo systemctl stop catalog || true
           sudo cp -r /tmp/backend-files/* /opt/catalog-server/backend/
           sudo chown -R catalog:catalog /opt/catalog-server/backend
           sudo rm -rf /tmp/backend-files
           
-          # Install only additional packages if needed (skip core packages)
-          echo 'Checking for additional dependencies...'
           cd /opt/catalog-server/backend
-          if [ -f requirements.txt ]; then
-            echo 'Installing additional packages (skipping core packages already installed)...'
-            # Install only packages not already installed
-            sudo -u catalog /opt/catalog-server/backend/venv/bin/pip install --upgrade pip
-            sudo -u catalog /opt/catalog-server/backend/venv/bin/pip install requests flask-migrate || echo 'Additional packages installation completed with warnings'
-          fi
+          source venv/bin/activate
+          pip install --no-deps Flask-SQLAlchemy Flask-CORS python-dotenv || true
         "
         
-        # Deploy frontend files
         echo "Deploying frontend files..."
         scp -i ec2-key.pem -o StrictHostKeyChecking=no -r frontend/build/* $EC2_USER@$EC2_HOST:/tmp/frontend-files/
+        
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
           sudo cp -r /tmp/frontend-files/* /opt/catalog-server/frontend/
           sudo chown -R catalog:catalog /opt/catalog-server/frontend
           sudo rm -rf /tmp/frontend-files
         "
         
-        # Configure and restart services
         echo "Configuring services..."
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          # Only update nginx config if custom one was uploaded
           if [ -f /tmp/catalog.conf ]; then
             sudo cp /tmp/catalog.conf /etc/nginx/sites-available/catalog
             sudo ln -sf /etc/nginx/sites-available/catalog /etc/nginx/sites-enabled/
             sudo rm -f /etc/nginx/sites-enabled/default
           fi
           
-          # Test nginx config before restarting
-          sudo nginx -t
-          if [ \$? -eq 0 ]; then
-            echo 'Nginx config is valid'
-          else
-            echo 'Nginx config error, keeping default config'
-            sudo rm -f /etc/nginx/sites-enabled/catalog
-          fi
-          
-          # Start catalog service (it was enabled in user-data but not started)
-          echo 'Starting catalog service...'
-          sudo systemctl daemon-reload
-          sudo systemctl start catalog
-          sleep 5
-          
-          # Check if catalog service started successfully
-          if sudo systemctl is-active --quiet catalog; then
-            echo 'Catalog service started successfully'
-          else
-            echo 'Catalog service failed to start, checking logs:'
-            sudo journalctl -u catalog --no-pager -n 20
-            
-            # Try to start it manually for debugging
-            echo 'Trying to start Flask app manually:'
-            cd /opt/catalog-server/backend
-            sudo -u catalog /opt/catalog-server/backend/venv/bin/python app.py &
-            sleep 3
-          fi
-          
-          # Restart nginx
-          sudo systemctl restart nginx
-          sudo systemctl status catalog --no-pager
-          sudo systemctl status nginx --no-pager
+          sudo nginx -t || echo 'Nginx config test failed'
         "
         
-        # Don't remove the key yet - needed for health check
-        echo "Services configured successfully"
+        # Create systemd service
+        cat > catalog.service << 'EOF'
+        [Unit]
+        Description=Catalog Server Flask Application
+        After=network.target
+        
+        [Service]
+        Type=simple
+        User=catalog
+        Group=catalog
+        WorkingDirectory=/opt/catalog-server/backend
+        Environment=PATH=/opt/catalog-server/backend/venv/bin
+        ExecStart=/opt/catalog-server/backend/venv/bin/python app.py
+        Restart=always
+        RestartSec=3
+        
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+        
+        scp -i ec2-key.pem -o StrictHostKeyChecking=no catalog.service $EC2_USER@$EC2_HOST:/tmp/
+        
+        ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+          sudo cp /tmp/catalog.service /etc/systemd/system/
+          sudo systemctl daemon-reload
+          sudo systemctl enable catalog
+          sudo systemctl start catalog
+          sudo systemctl restart nginx
+        "
+        
+        rm catalog.service
 
     - name: Health check
       env:
@@ -316,51 +286,36 @@ jobs:
         EC2_USER: ubuntu
         EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
       run: |
-        # Recreate SSH key for health check debugging
         echo "$EC2_KEY" > ec2-key.pem
         chmod 600 ec2-key.pem
         
-        echo "Waiting for services to start..."
+        echo "Waiting for services..."
         sleep 30
         
-        # Debug: Check if services are running
-        echo "=== Debugging Services ==="
+        echo "=== Service Status ==="
         ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
-          echo 'Checking catalog service status:'
-          sudo systemctl status catalog --no-pager || echo 'Catalog service not running'
-          
-          echo -e '\nChecking nginx status:'
-          sudo systemctl status nginx --no-pager || echo 'Nginx service not running'
-          
-          echo -e '\nChecking if Flask app is responding locally:'
-          curl -f http://localhost:5000/health || echo 'Flask app not responding'
-          
-          echo -e '\nChecking nginx error logs:'
-          sudo tail -10 /var/log/nginx/error.log || echo 'No nginx error logs'
-          
-          echo -e '\nChecking catalog service logs:'
-          sudo journalctl -u catalog --no-pager -n 10 || echo 'No catalog service logs'
-          
-          echo -e '\nChecking if port 5000 is listening:'
-          sudo netstat -tlnp | grep :5000 || echo 'Port 5000 not listening'
+          sudo systemctl status catalog --no-pager || true
+          sudo systemctl status nginx --no-pager || true
+          curl -f http://localhost:5000/health || echo 'Local health check failed'
+          sudo ss -tlnp | grep :5000 || echo 'Port 5000 not listening'
         "
         
-        # Try health check
-        echo "=== Testing Health Check ==="
-        curl -v $API_URL/health || {
-          echo "Health check failed with direct curl"
+        echo "=== External Health Check ==="
+        if curl -f $API_URL/health; then
+          echo "Health check passed"
+        else
+          echo "Health check failed"
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+            sudo journalctl -u catalog --no-pager -n 20
+          "
           exit 1
-        }
+        fi
         
-        curl -f $API_URL/products || {
-          echo "Products endpoint failed"
-          exit 1
-        }
+        curl -f $API_URL/products || exit 1
         
         echo "✅ Deployment successful!"
         echo "🌐 Application URL: $API_URL"
         
-        # Clean up SSH key
         rm ec2-key.pem
 
     - name: Deployment summary

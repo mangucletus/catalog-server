@@ -20,7 +20,8 @@ apt-get install -y \
     python3-dev \
     build-essential \
     git \
-    curl
+    curl \
+    net-tools
 
 # Install Node.js 18
 echo "Installing Node.js..."
@@ -46,7 +47,7 @@ source venv/bin/activate
 # Upgrade pip first
 pip install --upgrade pip
 
-# Install Python packages one by one with better error handling
+# Install Python packages
 echo "Installing Python packages..."
 pip install flask==2.3.3
 pip install flask-sqlalchemy==3.0.5
@@ -54,33 +55,6 @@ pip install flask-cors==4.0.0
 pip install psycopg2-binary==2.9.7
 pip install python-dotenv==1.0.0
 pip install gunicorn==21.2.0
-
-# Create basic app structure
-echo "Creating basic app files..."
-cat > app.py << 'EOF'
-from flask import Flask, jsonify
-from flask_cors import CORS
-
-app = Flask(__name__)
-CORS(app)
-
-@app.route('/health')
-def health():
-    return jsonify({'status': 'healthy', 'message': 'Catalog server is running'})
-
-@app.route('/products')
-def products():
-    return jsonify({
-        'success': True,
-        'data': [
-            {'id': 1, 'name': 'Sample Product', 'price': 99.99},
-            {'id': 2, 'name': 'Another Product', 'price': 149.99}
-        ]
-    })
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-EOF
 
 # Create systemd service for catalog app
 echo "Creating systemd service..."
@@ -106,7 +80,7 @@ EOF
 # Set ownership
 chown -R catalog:catalog /opt/catalog-server
 
-# Enable and start services
+# Enable services but don't start yet (app files will be deployed later)
 echo "Configuring services..."
 systemctl daemon-reload
 systemctl enable catalog
