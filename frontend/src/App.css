@@ -1,73 +1,115 @@
 .App {
-    text-align: center;
+    min-height: 100vh;
+    background-color: #f5f7fa;
 }
 
-/* Custom Amplify UI styling */
+/* Amplify Authenticator styling overrides */
 :root {
-    --amplify-primary-color: #2563eb;
-    --amplify-primary-tint: #3b82f6;
-    --amplify-primary-shade: #1d4ed8;
+    --amplify-colors-brand-primary-60: #2563eb;
+    --amplify-colors-brand-primary-80: #1d4ed8;
+    --amplify-colors-brand-primary-90: #1e40af;
+    --amplify-colors-brand-primary-100: #1e3a8a;
 }
 
-/* Override Amplify authenticator styles */
-.amplify-authenticator {
-    --amplify-components-authenticator-router-background-color: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    --amplify-components-authenticator-router-border-color: transparent;
+/* Center the authenticator */
+[data-amplify-authenticator] {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background-color: #f5f7fa;
 }
 
-.amplify-card {
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(10px);
-    border-radius: 16px;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+/* Style the authenticator container */
+[data-amplify-authenticator] [data-amplify-router] {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    max-width: 400px;
+    width: 100%;
+    margin: 2rem;
+    padding: 2rem;
 }
 
-.amplify-heading {
+/* Header styling */
+[data-amplify-authenticator] [data-amplify-router-header] {
+    text-align: center;
+    margin-bottom: 1.5rem;
+}
+
+[data-amplify-authenticator] [data-amplify-router-header] h2 {
     color: #1f2937;
-    font-weight: 700;
-}
-
-.amplify-button[data-variation="primary"] {
-    background: linear-gradient(135deg, #2563eb, #3b82f6);
-    border: none;
-    border-radius: 8px;
+    font-size: 1.5rem;
     font-weight: 600;
-    transition: all 0.3s ease;
+    margin: 0;
 }
 
-.amplify-button[data-variation="primary"]:hover {
-    background: linear-gradient(135deg, #1d4ed8, #2563eb);
-    transform: translateY(-1px);
+/* Form field styling */
+[data-amplify-authenticator] .amplify-field {
+    margin-bottom: 1rem;
 }
 
-.amplify-input {
-    border-radius: 8px;
-    border: 2px solid #e5e7eb;
-    transition: border-color 0.3s ease;
+[data-amplify-authenticator] .amplify-input {
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    padding: 0.75rem;
+    width: 100%;
+    font-size: 14px;
 }
 
-.amplify-input:focus {
+[data-amplify-authenticator] .amplify-input:focus {
     border-color: #2563eb;
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    outline: none;
 }
 
-/* Global styles */
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+/* Button styling */
+[data-amplify-authenticator] .amplify-button[data-variation='primary'] {
+    background-color: #2563eb;
+    border-radius: 6px;
+    padding: 0.75rem 1.5rem;
+    font-weight: 500;
+    width: 100%;
+    border: none;
+    color: white;
+    cursor: pointer;
 }
 
-body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-        sans-serif;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    min-height: 100vh;
+[data-amplify-authenticator] .amplify-button[data-variation='primary']:hover {
+    background-color: #1d4ed8;
 }
 
-code {
-    font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-        monospace; }
+[data-amplify-authenticator] .amplify-button[data-variation='link'] {
+    color: #2563eb;
+    text-decoration: none;
+}
+
+[data-amplify-authenticator] .amplify-button[data-variation='link']:hover {
+    text-decoration: underline;
+}
+
+/* Labels */
+[data-amplify-authenticator] .amplify-label {
+    font-weight: 500;
+    color: #374151;
+    margin-bottom: 0.5rem;
+    display: block;
+}
+
+/* Error messages */
+[data-amplify-authenticator] .amplify-alert {
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+}
+
+[data-amplify-authenticator] .amplify-alert[data-variation='error'] {
+    background-color: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+}
+
+/* Loading state */
+[data-amplify-authenticator] .amplify-loading {
+    text-align: center;
+    padding: 2rem; }

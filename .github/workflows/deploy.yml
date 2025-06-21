@@ -140,6 +140,7 @@ jobs:
       - name: Generate environment file
         run: |
           cd frontend
+          echo "Generating .env file with infrastructure outputs..."
           cat > .env <<EOF
           REACT_APP_USER_POOL_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_id }}
           REACT_APP_USER_POOL_CLIENT_ID=${{ needs.deploy-infrastructure.outputs.cognito_user_pool_client_id }}
@@ -147,31 +148,53 @@ jobs:
           REACT_APP_API_URL=http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
           REACT_APP_AWS_REGION=${{ env.AWS_REGION }}
           EOF
+          
+          echo "Generated .env contents:"
+          cat .env
+
+      - name: Create missing CSS files
+        run: |
+          cd frontend/src
+          
+          # Create App.css
+          cat > App.css <<'EOF'
+          .App {
+            min-height: 100vh;
+            background-color: #f5f7fa;
+          }
+          EOF
+
+          # Create HomePage.css
+          mkdir -p pages
+          cat > pages/HomePage.css <<'EOF'
+          .home-page {
+            min-height: 100vh;
+            background-color: #f5f7fa;
+          }
+          .header {
+            background: white;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            padding: 1rem 0;
+          }
+          EOF
+
+          # Create ProductCard.css
+          mkdir -p components
+          cat > components/ProductCard.css <<'EOF'
+          .product-card {
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+          }
+          EOF
 
       - name: Build frontend
         run: |
           cd frontend
-          
-          # Remove any old public directory
-          rm -rf public
-          
-          # Create fresh public directory with our simple index.html
-          mkdir -p public
-          cp index.html public/index.html
-          
-          # Verify our simple HTML is in place
-          echo "=== Checking public/index.html content ==="
-          head -10 public/index.html
-          
-          # Build the React app - this will use our simple HTML as template
+          rm -rf build
           npm run build
-          
-          # Verify the built index.html has our simple structure
-          echo "=== Checking build/index.html content ==="
-          head -10 build/index.html
-          
-          # Verify build contents
-          echo "Build directory contents:"
+          echo "Build completed successfully"
           ls -la build/
 
       - name: Upload frontend build
@@ -209,23 +232,13 @@ jobs:
           server {
               listen 80;
               server_name _;
+              root /opt/catalog-server/frontend;
+              index index.html;
 
-              # Serve frontend static files
               location / {
-                  root /opt/catalog-server/frontend;
-                  index index.html;
                   try_files $uri $uri/ /index.html;
-                  
-                  # Add headers for better caching
-                  add_header Cache-Control "public, max-age=31536000" always;
-                  
-                  # Handle HTML files differently
-                  location ~* \.html$ {
-                      add_header Cache-Control "no-cache, no-store, must-revalidate" always;
-                  }
               }
 
-              # Proxy ALL API requests to Flask backend (no /api prefix needed)
               location /health {
                   proxy_pass http://127.0.0.1:5000/health;
                   proxy_set_header Host $host;
@@ -242,7 +255,6 @@ jobs:
                   proxy_set_header X-Forwarded-Proto $scheme;
               }
               
-              # Handle products with paths (like /products/1 or /products/category/Electronics)
               location ~ ^/products/ {
                   proxy_pass http://127.0.0.1:5000$request_uri;
                   proxy_set_header Host $host;
@@ -250,8 +262,17 @@ jobs:
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                   proxy_set_header X-Forwarded-Proto $scheme;
               }
+
+              location /categories {
+                  proxy_pass http://127.0.0.1:5000/categories;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
           }
           NGINX_CONF
+
       - name: Create systemd service file
         run: |
           cat > catalog.service <<EOF
@@ -266,6 +287,7 @@ jobs:
           WorkingDirectory=/opt/catalog-server/backend
           Environment=PATH=/opt/catalog-server/backend/venv/bin
           Environment=FLASK_ENV=production
+          EnvironmentFile=/opt/catalog-server/backend/.env
           ExecStart=/opt/catalog-server/backend/venv/bin/gunicorn --bind 127.0.0.1:5000 --workers 3 app:app
           Restart=always
           RestartSec=3
@@ -274,6 +296,21 @@ jobs:
 
           [Install]
           WantedBy=multi-user.target
+          EOF
+
+      - name: Create database initialization script
+        run: |
+          cat > init_db.py <<'EOF'
+          from app import app, db
+          import sys
+
+          try:
+              with app.app_context():
+                  db.create_all()
+                  print("Database tables created successfully")
+          except Exception as e:
+              print(f"Database initialization failed: {e}")
+              sys.exit(1)
           EOF
 
       - name: Deploy to EC2
@@ -292,56 +329,58 @@ jobs:
           scp -i ec2-key.pem -o StrictHostKeyChecking=no catalog.service $EC2_USER@$EC2_HOST:/tmp/
           scp -i ec2-key.pem -o StrictHostKeyChecking=no backend_env $EC2_USER@$EC2_HOST:/tmp/
           scp -i ec2-key.pem -o StrictHostKeyChecking=no nginx-catalog.conf $EC2_USER@$EC2_HOST:/tmp/
+          scp -i ec2-key.pem -o StrictHostKeyChecking=no init_db.py $EC2_USER@$EC2_HOST:/tmp/
 
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
+      - name: Configure and start services
+        env:
+          EC2_HOST: ${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}
+          EC2_USER: ubuntu
+          EC2_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
+        run: |
+          echo "$EC2_KEY" > ec2-key.pem
+          chmod 600 ec2-key.pem
+
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << 'DEPLOY_SCRIPT'
+            set -e
+            
+            echo "Stopping existing services..."
             sudo systemctl stop catalog || true
 
-            # Create directories and copy files
+            echo "Creating directories and copying files..."
             sudo mkdir -p /opt/catalog-server/backend /opt/catalog-server/frontend
             sudo cp -r /tmp/backend/* /opt/catalog-server/backend/
             sudo cp -r /tmp/frontend/* /opt/catalog-server/frontend/
             sudo cp /tmp/backend_env /opt/catalog-server/backend/.env
+            sudo cp /tmp/init_db.py /opt/catalog-server/backend/
             
-            # Fix nginx ownership and permissions
+            echo "Setting ownership and permissions..."
             sudo chown -R www-data:www-data /opt/catalog-server/frontend/
             sudo chown -R catalog:catalog /opt/catalog-server/backend/
             sudo chmod -R 755 /opt/catalog-server/frontend/
             sudo chmod -R 755 /opt/catalog-server/backend/
 
-            # Debug: Check if frontend files exist and structure
-            echo 'Checking frontend files...'
+            echo "Checking frontend files..."
             ls -la /opt/catalog-server/frontend/
-            echo 'Checking for index.html...'
-            ls -la /opt/catalog-server/frontend/index.html || echo 'index.html not found!'
-            echo 'Checking build directory structure...'
-            find /opt/catalog-server/frontend/ -name "*.html" -o -name "*.js" -o -name "*.css" | head -10
-            echo 'Testing if index.html is readable by nginx...'
-            sudo -u www-data cat /opt/catalog-server/frontend/index.html | head -5 || echo 'Cannot read index.html as www-data'
+            test -f /opt/catalog-server/frontend/index.html && echo 'index.html found!' || echo 'index.html not found!'
 
-            # Ensure virtual environment exists
+            echo "Setting up Python virtual environment..."
             if [ ! -d "/opt/catalog-server/backend/venv" ]; then
-              echo 'Creating virtual environment...'
               sudo -u catalog bash -c 'cd /opt/catalog-server/backend && python3 -m venv venv'
             fi
 
-            echo 'Installing Python dependencies...'
+            echo "Installing Python dependencies..."
             sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt'
 
-            echo 'Testing Flask-CORS import...'
-            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "from flask_cors import CORS; print(\"Flask-CORS imported successfully\")"' || echo 'Flask-CORS import failed'
+            echo "Initializing database..."
+            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python init_db.py' || echo 'Database initialization completed with errors'
 
-            echo 'Testing Flask app import...'
-            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "import sys; exec(\"try:\\n    from app import app\\n    print(\\\"Flask app imported successfully\\\")\\nexcept Exception as e:\\n    print(\\\"Flask app import failed:\\\", str(e))\")"' || echo 'Flask app import test completed'
-
-            # Initialize database tables
-            echo 'Initializing database...'
-            sudo -u catalog bash -c 'cd /opt/catalog-server/backend && source venv/bin/activate && python -c "import sys; exec(\"try:\\n    from app import app, db\\n    with app.app_context():\\n        db.create_all()\\n        print(\\\"Database tables created successfully\\\")\\nexcept Exception as e:\\n    print(\\\"Database initialization failed:\\\", str(e))\")"' || echo 'Database initialization completed with errors'
-
+            echo "Installing and starting catalog service..."
             sudo cp /tmp/catalog.service /etc/systemd/system/
             sudo systemctl daemon-reload
             sudo systemctl enable catalog
             sudo systemctl start catalog
 
+            echo "Waiting for service to start..."
             sleep 10
             if sudo systemctl is-active --quiet catalog; then
               echo 'Catalog service started successfully'
@@ -350,31 +389,21 @@ jobs:
               sudo journalctl -u catalog --no-pager -n 20
             fi
 
-            # Configure nginx for the application
-            echo 'Configuring nginx...'
+            echo "Configuring nginx..."
             sudo cp /tmp/nginx-catalog.conf /etc/nginx/sites-available/catalog-server
             sudo ln -sf /etc/nginx/sites-available/catalog-server /etc/nginx/sites-enabled/
             sudo rm -f /etc/nginx/sites-enabled/default
             
-            # Debug nginx config
-            echo 'Testing nginx configuration...'
+            echo "Testing nginx configuration..."
             sudo nginx -t
-            
-            # Debug: Check what nginx is actually serving
-            echo 'Checking nginx sites-enabled...'
-            ls -la /etc/nginx/sites-enabled/
-            
-            echo 'Checking nginx config content...'
-            sudo cat /etc/nginx/sites-available/catalog-server
             
             sudo systemctl restart nginx
             
-            # Test if nginx is serving files correctly
-            echo 'Testing nginx file serving...'
+            echo "Testing local connectivity..."
             curl -I http://localhost/ || echo 'Nginx not responding on localhost'
-          EOF
+          DEPLOY_SCRIPT
 
-          rm ec2-key.pem catalog.service backend_env nginx-catalog.conf
+          rm ec2-key.pem
 
       - name: Health check
         env:
@@ -387,28 +416,10 @@ jobs:
           chmod 600 ec2-key.pem
 
           echo "Waiting for services to start..."
-          sleep 45
-
-          echo "=== Debugging Frontend Files ==="
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
-            echo 'Frontend directory contents:'
-            ls -la /opt/catalog-server/frontend/
-            
-            echo 'Looking for index.html:'
-            find /opt/catalog-server/frontend/ -name "index.html" -type f
-            
-            echo 'Nginx error logs:'
-            sudo tail -n 20 /var/log/nginx/error.log || echo 'No nginx error log found'
-            
-            echo 'Nginx access logs:'
-            sudo tail -n 10 /var/log/nginx/access.log || echo 'No nginx access log found'
-            
-            echo 'Testing direct file access:'
-            curl -I http://localhost/index.html || echo 'index.html not accessible'
-          EOF
+          sleep 30
 
           echo "=== Service Health Check ==="
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST <<'EOF'
+          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << 'HEALTH_CHECK'
             echo 'Catalog service status:'
             sudo systemctl status catalog --no-pager || true
 
@@ -420,7 +431,7 @@ jobs:
 
             echo 'Testing health endpoint:'
             curl -f http://localhost:5000/health || echo 'Health endpoint failed'
-          EOF
+          HEALTH_CHECK
 
           echo "=== External Health Check ==="
           if curl -f $API_URL/health; then
@@ -433,11 +444,20 @@ jobs:
 
           rm ec2-key.pem
 
+      - name: Cleanup temporary files
+        run: |
+          rm -f catalog.service backend_env nginx-catalog.conf init_db.py
+
       - name: Deployment summary
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Component | Status | URL |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|--------|-----|" >> $GITHUB_STEP_SUMMARY
-          echo "| Infrastructure | ✅ Existing | - |" >> $GITHUB_STEP_SUMMARY
+          echo "| Infrastructure | ✅ Deployed | - |" >> $GITHUB_STEP_SUMMARY
           echo "| Application | ✅ Deployed | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }} |" >> $GITHUB_STEP_SUMMARY
           echo "| API Health | ✅ Healthy | http://${{ needs.deploy-infrastructure.outputs.ec2_public_ip }}/health |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Cognito Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- User Pool ID: ${{ needs.deploy-infrastructure.outputs.cognito_user_pool_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Client ID: ${{ needs.deploy-infrastructure.outputs.cognito_user_pool_client_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Identity Pool ID: ${{ needs.deploy-infrastructure.outputs.cognito_identity_pool_id }}" >> $GITHUB_STEP_SUMMARY

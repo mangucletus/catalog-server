@@ -8,6 +8,15 @@ const HomePage = ({ user, signOut }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [categories, setCategories] = useState([]);
+
+  // Debug user information
+  console.log('HomePage - User info:', {
+    user,
+    username: user?.username,
+    email: user?.attributes?.email,
+    signedIn: !!user
+  });
 
   // Fetch products when component mounts
   useEffect(() => {
@@ -22,22 +31,43 @@ const HomePage = ({ user, signOut }) => {
       setError(null);
       
       // First test the health endpoint
+      console.log('Testing health endpoint...');
       await apiService.healthCheck();
       console.log('Health check passed');
       
       // Then fetch products
+      console.log('Fetching products from API...');
       const response = await apiService.getProducts();
       console.log('Products response:', response);
       
       if (response && response.success) {
-        setProducts(response.data || []);
-        console.log('Products loaded:', response.data?.length || 0);
+        const productsData = response.data || [];
+        setProducts(productsData);
+        
+        // Extract unique categories
+        const uniqueCategories = [...new Set(productsData.map(product => product.category))].filter(Boolean);
+        setCategories(uniqueCategories);
+        
+        console.log('Products loaded:', productsData.length);
+        console.log('Categories found:', uniqueCategories);
       } else {
         setError('Failed to fetch products: Invalid response format');
+        console.error('Invalid response format:', response);
       }
     } catch (err) {
       console.error('Error in fetchProducts:', err);
-      setError(`Error connecting to server: ${err.message}`);
+      
+      // Provide more detailed error information
+      let errorMessage = 'Error connecting to server';
+      if (err.response) {
+        errorMessage = `Server error: ${err.response.status} - ${err.response.statusText}`;
+      } else if (err.request) {
+        errorMessage = 'Network error: Unable to reach server';
+      } else {
+        errorMessage = `Request error: ${err.message}`;
+      }
+      
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -49,6 +79,8 @@ const HomePage = ({ user, signOut }) => {
       setLoading(true);
       setError(null);
       setSelectedCategory(category);
+      
+      console.log('Filtering by category:', category);
       
       if (category === 'all') {
         const response = await apiService.getProducts();
@@ -69,10 +101,10 @@ const HomePage = ({ user, signOut }) => {
     }
   };
 
-  // Get unique categories from products
-  const getCategories = () => {
-    const categories = products.map(product => product.category);
-    return [...new Set(categories)].filter(Boolean);
+  // Get user display name
+  const getUserDisplayName = () => {
+    if (!user) return 'Guest';
+    return user.username || user.attributes?.email || user.attributes?.preferred_username || 'User';
   };
 
   if (loading) {
@@ -80,7 +112,7 @@ const HomePage = ({ user, signOut }) => {
       <div className="loading-container">
         <div className="loading-spinner"></div>
         <p>Loading products...</p>
-        <small>Connecting to server...</small>
+        <small>Connecting to server at {process.env.REACT_APP_API_URL || 'localhost:5000'}</small>
       </div>
     );
   }
@@ -95,7 +127,9 @@ const HomePage = ({ user, signOut }) => {
         </button>
         <div className="debug-info">
           <p><strong>API URL:</strong> {process.env.REACT_APP_API_URL || 'http://localhost:5000'}</p>
-          <p><strong>User:</strong> {user?.username || 'Anonymous'}</p>
+          <p><strong>User Pool ID:</strong> {process.env.REACT_APP_USER_POOL_ID || 'Not set'}</p>
+          <p><strong>AWS Region:</strong> {process.env.REACT_APP_AWS_REGION || 'Not set'}</p>
+          <p><strong>User:</strong> {getUserDisplayName()}</p>
         </div>
       </div>
     );
@@ -108,7 +142,7 @@ const HomePage = ({ user, signOut }) => {
         <div className="header-content">
           <h1>Product Catalog</h1>
           <div className="user-info">
-            <span>Welcome, {user?.username || user?.attributes?.email || 'User'}!</span>
+            <span>Welcome, {getUserDisplayName()}!</span>
             <button onClick={signOut} className="sign-out-btn">
               Sign Out
             </button>
@@ -117,30 +151,37 @@ const HomePage = ({ user, signOut }) => {
       </header>
 
       {/* Category Filter */}
-      <div className="category-filter">
-        <button 
-          className={`category-btn ${selectedCategory === 'all' ? 'active' : ''}`}
-          onClick={() => filterProductsByCategory('all')}
-        >
-          All Products ({products.length})
-        </button>
-        {getCategories().map(category => (
+      {categories.length > 0 && (
+        <div className="category-filter">
           <button 
-            key={category}
-            className={`category-btn ${selectedCategory === category ? 'active' : ''}`}
-            onClick={() => filterProductsByCategory(category)}
+            className={`category-btn ${selectedCategory === 'all' ? 'active' : ''}`}
+            onClick={() => filterProductsByCategory('all')}
           >
-            {category}
+            All Products ({products.length})
           </button>
-        ))}
-      </div>
+          {categories.map(category => (
+            <button 
+              key={category}
+              className={`category-btn ${selectedCategory === category ? 'active' : ''}`}
+              onClick={() => filterProductsByCategory(category)}
+            >
+              {category}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Products Grid */}
       <main className="main-content">
         {products.length === 0 ? (
           <div className="no-products">
             <h2>No products found</h2>
-            <p>There are no products available at the moment.</p>
+            <p>
+              {selectedCategory === 'all' 
+                ? "There are no products available at the moment." 
+                : `No products found in the "${selectedCategory}" category.`
+              }
+            </p>
             <button onClick={fetchProducts} className="retry-btn">
               Refresh Products
             </button>
