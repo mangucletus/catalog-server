@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ProductCard from '../components/ProductCard';
+import AddProductForm from '../components/AddProductForm';
 import { apiService } from '../services/api';
 import './HomePage.css';
 
@@ -9,6 +10,7 @@ const HomePage = ({ user, signOut }) => {
   const [error, setError] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [categories, setCategories] = useState([]);
+  const [showAddForm, setShowAddForm] = useState(false);
 
   // Debug user information
   console.log('HomePage - User info:', {
@@ -101,6 +103,17 @@ const HomePage = ({ user, signOut }) => {
     }
   };
 
+  // Handle product creation
+  const handleProductAdded = (newProduct) => {
+    console.log('New product added:', newProduct);
+    // Add the new product to the current list
+    setProducts(prev => [newProduct, ...prev]);
+    // Update categories if it's a new category
+    if (newProduct.category && !categories.includes(newProduct.category)) {
+      setCategories(prev => [...prev, newProduct.category]);
+    }
+  };
+
   // Get user display name
   const getUserDisplayName = () => {
     if (!user) return 'Guest';
@@ -143,6 +156,12 @@ const HomePage = ({ user, signOut }) => {
           <h1>Product Catalog</h1>
           <div className="user-info">
             <span>Welcome, {getUserDisplayName()}!</span>
+            <button 
+              className="add-product-btn"
+              onClick={() => setShowAddForm(true)}
+            >
+              + Add Product
+            </button>
             <button onClick={signOut} className="sign-out-btn">
               Sign Out
             </button>
@@ -182,9 +201,17 @@ const HomePage = ({ user, signOut }) => {
                 : `No products found in the "${selectedCategory}" category.`
               }
             </p>
-            <button onClick={fetchProducts} className="retry-btn">
-              Refresh Products
-            </button>
+            <div className="no-products-actions">
+              <button onClick={fetchProducts} className="retry-btn">
+                Refresh Products
+              </button>
+              <button 
+                onClick={() => setShowAddForm(true)}
+                className="add-first-product-btn"
+              >
+                Add Your First Product
+              </button>
+            </div>
           </div>
         ) : (
           <div className="products-grid">
@@ -194,6 +221,14 @@ const HomePage = ({ user, signOut }) => {
           </div>
         )}
       </main>
+
+      {/* Add Product Form Modal */}
+      {showAddForm && (
+        <AddProductForm
+          onProductAdded={handleProductAdded}
+          onClose={() => setShowAddForm(false)}
+        />
+      )}
     </div>
   );
 };
